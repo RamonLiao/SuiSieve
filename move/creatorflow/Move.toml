@@ -1,0 +1,16 @@
+[package]
+name = "creatorflow"
+edition = "2024"         # edition = "legacy" to use legacy (pre-2024) Move
+# license = ""           # e.g., "MIT", "GPL", "Apache 2.0"
+# authors = ["..."]      # e.g., ["Joe Smith (joesmith@noemail.com)", "John Snow (johnsnow@noemail.com)"]
+
+[dependencies]
+# Real Circle native USDC — the coin type creators actually hold. MVP is
+# monomorphic `Coin<USDC>` (single stablecoin, Stripe-style); multi-asset
+# `Coin<T>` is a deliberate v2 redeploy (see spec §4.2 break-point).
+# Per-network rev: build defaults to testnet; mainnet swaps the rev via
+# `dep-replacements.mainnet` below — contract logic is identical across nets.
+usdc = { git = "https://github.com/circlefin/stablecoin-sui.git", subdir = "packages/usdc", rev = "release-2024-11-22T170906", override = true }
+
+# Read more about the package management system options:
+# https://docs.sui.io/guides/developer/sui-101/move-package-management

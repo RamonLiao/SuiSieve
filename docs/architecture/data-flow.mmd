@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    participant Payer as Payer (Fan / Stripe-on-Sui)
+    participant PTB as PTB execute_split
+    participant Config as SplitConfig (shared)
+    participant Proto as ProtocolConfig (shared, read-only)
+    participant Tax as TaxVault (shared)
+    participant Sav as SavingsVault (shared)
+    participant Scallop as Scallop USDC pool
+    participant R as Recipients (N wallets)
+    participant Trez as Treasury (protocol)
+    participant Idx as Indexer (gRPC)
+
+    Payer->>PTB: Coin<USDC>, include_yield, expected_version
+    PTB->>Config: read recipients, bps, version
+    PTB->>Proto: read treasury, fee bounds
+    PTB-->>PTB: assert version match & fee in bounds
+    PTB->>R: transfer N slices
+    PTB->>Trez: transfer protocol_fee slice
+    PTB->>Tax: deposit(tax_coin)
+    alt include_yield && strategy set
+        PTB->>Scallop: deposit(yield_slice)
+        Note over PTB,Scallop: abort here reverts the WHOLE PTB<br/>(no in-Move fallback); client retries include_yield=false
+        Scallop-->>Sav: yield position ref stored
+    else yield off / Scallop-skip retry
+        PTB->>Sav: deposit(savings_coin incl. yield_slice)
+    end
+    PTB->>Sav: deposit(remaining savings_coin)
+    PTB-->>Idx: emit SplitExecuted
+    Idx-->>R: notify (off-chain, v1)

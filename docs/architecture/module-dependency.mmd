@@ -1,0 +1,21 @@
+graph TD
+    router[router<br/>execute_split PTB entry]
+    config[split_config<br/>SplitConfig shared obj]
+    vault[vaults<br/>TaxVault / SavingsVault]
+    cap[capabilities<br/>OwnerCap / TaxCap / SavingsCap]
+    protocol[protocol_config<br/>ProtocolConfig / AdminCap]
+    yield_adapter[yield_adapter<br/>Scallop wrapper]
+    events[events<br/>SplitExecuted / etc.]
+
+    router --> config
+    router --> vault
+    router --> cap
+    router --> protocol
+    router --> yield_adapter
+    router --> events
+    vault --> cap
+    config --> cap
+    config --> protocol
+    yield_adapter --> vault
+    yield_adapter --> config
+%% yield_adapter reads StrategyRef (defined in split_config) — backward edge: config(3) precedes yield_adapter(6)

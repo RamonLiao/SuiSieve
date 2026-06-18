@@ -1,0 +1,22 @@
+[package]
+name = "creatorflow-indexer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", tag = "testnet-v1.72.2" }
+# `postgres_backend` (not `postgres`) gives the Pg query DSL/backend WITHOUT
+# linking libpq — execution goes through diesel-async (tokio-postgres, pure Rust).
+diesel = { version = "2.3", default-features = false, features = ["postgres_backend"] }
+diesel-async = { version = "0.8", features = ["postgres", "bb8"] }
+diesel_migrations = "2.3"
+url = "2"
+bcs = "0.1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+async-trait = "0.1"
+dotenvy = "0.15"
+prometheus = "0.13"
+tokio-util = "0.7"
+clap = { version = "4", features = ["derive"] }

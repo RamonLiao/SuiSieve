@@ -1,0 +1,26 @@
+# Progress / session notes
+tasks/progress.md
+tasks/lessons.md
+
+# Claude tooling (per global rule: never commit CLAUDE-related files)
+.claude/
+CLAUDE.md
+
+# Secrets
+**/.env
+**/.env.*
+!**/.env.example
+
+# Node
+**/node_modules/
+**/dist/
+**/.next/
+
+# Rust
+**/target/
+
+# Move
+**/build/
+
+# OS
+.DS_Store

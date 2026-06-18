@@ -1,0 +1,516 @@
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "prevId": "",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.config_created": {
+      "name": "config_created",
+      "schema": "",
+      "columns": {
+        "config_id": {
+          "name": "config_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "tx_digest": {
+          "name": "tx_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tax_vault_id": {
+          "name": "tax_vault_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "savings_vault_id": {
+          "name": "savings_vault_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner": {
+          "name": "owner",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_timestamp_ms": {
+          "name": "checkpoint_timestamp_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "config_created_owner_idx": {
+          "name": "config_created_owner_idx",
+          "columns": [
+            {
+              "expression": "owner",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "public.__diesel_schema_migrations": {
+      "name": "__diesel_schema_migrations",
+      "schema": "",
+      "columns": {
+        "version": {
+          "name": "version",
+          "type": "varchar(50)",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "run_on": {
+          "name": "run_on",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "CURRENT_TIMESTAMP"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "public.watermarks": {
+      "name": "watermarks",
+      "schema": "",
+      "columns": {
+        "pipeline": {
+          "name": "pipeline",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "epoch_hi_inclusive": {
+          "name": "epoch_hi_inclusive",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_hi_inclusive": {
+          "name": "checkpoint_hi_inclusive",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tx_hi": {
+          "name": "tx_hi",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timestamp_ms_hi_inclusive": {
+          "name": "timestamp_ms_hi_inclusive",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reader_lo": {
+          "name": "reader_lo",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pruner_timestamp": {
+          "name": "pruner_timestamp",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pruner_hi": {
+          "name": "pruner_hi",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chain_id": {
+          "name": "chain_id",
+          "type": "bytea",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "public.recipient_payout": {
+      "name": "recipient_payout",
+      "schema": "",
+      "columns": {
+        "tx_digest": {
+          "name": "tx_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "payout_idx": {
+          "name": "payout_idx",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient": {
+          "name": "recipient",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "bps": {
+          "name": "bps",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "recipient_payout_recipient_idx": {
+          "name": "recipient_payout_recipient_idx",
+          "columns": [
+            {
+              "expression": "recipient",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "recipient_payout_tx_digest_event_seq_fkey": {
+          "name": "recipient_payout_tx_digest_event_seq_fkey",
+          "tableFrom": "recipient_payout",
+          "tableTo": "split_executed",
+          "schemaTo": "public",
+          "columnsFrom": [
+            "tx_digest",
+            "event_seq"
+          ],
+          "columnsTo": [
+            "tx_digest",
+            "event_seq"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "recipient_payout_pkey": {
+          "name": "recipient_payout_pkey",
+          "columns": [
+            "tx_digest",
+            "event_seq",
+            "payout_idx"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "public.config_mutated": {
+      "name": "config_mutated",
+      "schema": "",
+      "columns": {
+        "tx_digest": {
+          "name": "tx_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "config_id": {
+          "name": "config_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "old_version": {
+          "name": "old_version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "new_version": {
+          "name": "new_version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "mutator": {
+          "name": "mutator",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_timestamp_ms": {
+          "name": "checkpoint_timestamp_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "config_mutated_pkey": {
+          "name": "config_mutated_pkey",
+          "columns": [
+            "tx_digest",
+            "event_seq"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "public.vault_withdrawn": {
+      "name": "vault_withdrawn",
+      "schema": "",
+      "columns": {
+        "tx_digest": {
+          "name": "tx_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "vault_id": {
+          "name": "vault_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kind": {
+          "name": "kind",
+          "type": "smallint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount": {
+          "name": "amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "recipient": {
+          "name": "recipient",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint_timestamp_ms": {
+          "name": "checkpoint_timestamp_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "vault_withdrawn_pkey": {
+          "name": "vault_withdrawn_pkey",
+          "columns": [
+            "tx_digest",
+            "event_seq"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "public.split_executed": {
+      "name": "split_executed",
+      "schema": "",
+      "columns": {
+        "tx_digest": {
+          "name": "tx_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "config_id": {
+          "name": "config_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "config_version": {
+          "name": "config_version",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "amount_in": {
+          "name": "amount_in",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tax_amount": {
+          "name": "tax_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "savings_amount": {
+          "name": "savings_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "protocol_fee_amount": {
+          "name": "protocol_fee_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "yield_amount": {
+          "name": "yield_amount",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "yield_included": {
+          "name": "yield_included",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "timestamp_ms": {
+          "name": "timestamp_ms",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "checkpoint": {
+          "name": "checkpoint",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "split_executed_config_ts_idx": {
+          "name": "split_executed_config_ts_idx",
+          "columns": [
+            {
+              "expression": "config_id",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "int8_ops",
+              "isExpression": false
+            },
+            {
+              "expression": "timestamp_ms",
+              "asc": false,
+              "nulls": "first",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "split_executed_pkey": {
+          "name": "split_executed_pkey",
+          "columns": [
+            "tx_digest",
+            "event_seq"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "tables": {}
+  }
+}
