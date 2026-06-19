@@ -12,17 +12,22 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-const q = (cursor?: string) => (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
 const enc = encodeURIComponent;
+const qs = (params: Record<string, string | undefined>): string => {
+  const pairs = Object.entries(params)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v!)}`);
+  return pairs.length ? `?${pairs.join("&")}` : "";
+};
 
 export const listConfigs = (owner: string, cursor?: string) =>
-  get<Page<Row>>(`/configs?owner=${enc(owner)}${q(cursor)}`);
+  get<Page<Row>>(`/configs${qs({ owner, cursor })}`);
 export const getConfigSummary = (id: string) => get<Row>(`/configs/${enc(id)}/summary`);
 export const listSplits = (id: string, cursor?: string) =>
-  get<Page<Row>>(`/configs/${enc(id)}/splits?${q(cursor).slice(1)}`);
+  get<Page<Row>>(`/configs/${enc(id)}/splits${qs({ cursor })}`);
 export const listMutations = (id: string, cursor?: string) =>
-  get<Page<Row>>(`/configs/${enc(id)}/mutations?${q(cursor).slice(1)}`);
+  get<Page<Row>>(`/configs/${enc(id)}/mutations${qs({ cursor })}`);
 export const listEarnings = (addr: string, cursor?: string) =>
-  get<Page<Row>>(`/collaborators/${enc(addr)}/earnings?${q(cursor).slice(1)}`);
+  get<Page<Row>>(`/collaborators/${enc(addr)}/earnings${qs({ cursor })}`);
 export const listWithdrawals = (vaultId: string, cursor?: string) =>
-  get<Page<Row>>(`/vaults/${enc(vaultId)}/withdrawals?${q(cursor).slice(1)}`);
+  get<Page<Row>>(`/vaults/${enc(vaultId)}/withdrawals${qs({ cursor })}`);
