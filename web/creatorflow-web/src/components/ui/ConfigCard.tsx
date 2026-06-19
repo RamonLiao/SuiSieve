@@ -1,47 +1,51 @@
-export interface ConfigCardProps {
-  config: {
-    id: string;
-    recipientCount: number;
-    taxBps: number;
-    savingsBps: number;
-    createdAtMs: string;
-  };
-  onClick: () => void;
-}
+"use client";
 
-export function ConfigCard({ config, onClick }: ConfigCardProps) {
-  const fmt = (bps: number) => `${(bps / 100).toFixed(2)}%`;
-  const date = new Date(Number(config.createdAtMs)).toLocaleDateString("en-US", {
-    year: "numeric",
+export function ConfigCard({ config, onClick }: { config: { id: string; recipientCount: number; taxBps: number; savingsBps: number; createdAtMs: string }; onClick: () => void }) {
+  const createdAt = new Intl.DateTimeFormat("en-US", {
     month: "short",
-    day: "numeric",
-  });
+    day: "2-digit",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Number(config.createdAtMs)));
 
   return (
     <button
       type="button"
       onClick={onClick}
-      className="group w-full text-left rounded-xl border border-zinc-800 bg-zinc-900 p-5 transition-all duration-150 hover:border-indigo-500 hover:shadow-lg hover:shadow-indigo-900/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500"
+      className="group relative w-full overflow-hidden rounded-[1.4rem] border border-slate-800 bg-slate-950 p-5 text-left shadow-[0_20px_50px_-30px_rgba(2,132,199,0.55)] transition duration-200 hover:-translate-y-0.5 hover:border-cyan-400/50 hover:bg-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
     >
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <p className="truncate font-mono text-xs text-zinc-500 mb-1">{config.id}</p>
-          <p className="text-sm text-zinc-300 font-medium">Created {date}</p>
-        </div>
-        <span className="shrink-0 rounded-full bg-zinc-800 px-2 py-0.5 text-xs font-medium text-zinc-400 group-hover:bg-indigo-900/40 group-hover:text-indigo-300 transition-colors">
-          {config.recipientCount} recipient{config.recipientCount !== 1 ? "s" : ""}
+      <span className="absolute inset-y-0 left-0 w-1 bg-gradient-to-b from-cyan-300 via-sky-500 to-blue-700" />
+      <span className="absolute -right-12 -top-16 h-36 w-36 rounded-full bg-cyan-400/8 blur-2xl transition group-hover:bg-cyan-400/15" />
+
+      <span className="relative flex items-start justify-between gap-4">
+        <span className="min-w-0">
+          <span className="block text-[0.65rem] font-bold uppercase tracking-[0.22em] text-cyan-300">
+            Split configuration
+          </span>
+          <span className="mt-2 block truncate font-mono text-sm font-medium text-slate-100">
+            {config.id}
+          </span>
+          <span className="mt-1 block text-xs text-slate-500">Created {createdAt}</span>
         </span>
-      </div>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="rounded-lg bg-zinc-800/60 px-3 py-2">
-          <p className="text-xs text-zinc-500 uppercase tracking-wide mb-0.5">Tax</p>
-          <p className="text-base font-semibold text-amber-400">{fmt(config.taxBps)}</p>
-        </div>
-        <div className="rounded-lg bg-zinc-800/60 px-3 py-2">
-          <p className="text-xs text-zinc-500 uppercase tracking-wide mb-0.5">Savings</p>
-          <p className="text-base font-semibold text-emerald-400">{fmt(config.savingsBps)}</p>
-        </div>
-      </div>
+        <span className="shrink-0 rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-300">
+          {config.recipientCount} {config.recipientCount === 1 ? "recipient" : "recipients"}
+        </span>
+      </span>
+
+      <span className="relative mt-5 grid grid-cols-2 overflow-hidden rounded-xl border border-slate-800 bg-black/20">
+        <span className="border-r border-slate-800 px-3.5 py-3">
+          <span className="block text-[0.65rem] font-bold uppercase tracking-[0.18em] text-slate-500">Tax reserve</span>
+          <span className="mt-1 block font-mono text-xl font-semibold tabular-nums text-amber-300">
+            {(config.taxBps / 100).toFixed(2)}%
+          </span>
+        </span>
+        <span className="px-3.5 py-3">
+          <span className="block text-[0.65rem] font-bold uppercase tracking-[0.18em] text-slate-500">Savings</span>
+          <span className="mt-1 block font-mono text-xl font-semibold tabular-nums text-cyan-300">
+            {(config.savingsBps / 100).toFixed(2)}%
+          </span>
+        </span>
+      </span>
     </button>
   );
 }
