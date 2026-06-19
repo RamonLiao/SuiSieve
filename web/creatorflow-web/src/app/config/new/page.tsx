@@ -47,23 +47,27 @@ export default function NewConfigPage() {
       return;
     }
 
+    const address = account.address;
+    // Capture existing config ids before submitting so we can detect the new one
+    const priorPage = await listConfigs(address);
+    const priorIds = new Set((priorPage.data as ConfigRow[]).map((r) => r.configId));
+
     const outcome = await run(draft);
     if (!outcome.ok) {
       setToastMsg(outcome.error);
       return;
     }
 
-    const address = account.address;
-    // Poll until the new config appears in the index
+    // Poll until a config id appears that wasn't in the prior set
     const page = await pollUntil(
       () => listConfigs(address),
-      (p) => (p.data as ConfigRow[]).length > 0,
+      (p) => (p.data as ConfigRow[]).some((r) => !priorIds.has(r.configId)),
       { baseMs: 800, capMs: 5000, maxMs: 30_000 },
     );
 
-    const rows = page.data as ConfigRow[];
-    if (rows.length > 0) {
-      router.push(`/config/${rows[0].configId}`);
+    const newRow = (page.data as ConfigRow[]).find((r) => !priorIds.has(r.configId));
+    if (newRow) {
+      router.push(`/config/${newRow.configId}`);
     } else {
       router.push("/dashboard");
     }

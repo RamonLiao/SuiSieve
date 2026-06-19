@@ -49,11 +49,16 @@ async function fetchConfigChainData(
   const savingsBps = cfg ? Number(cfg.savings_bps) : 0;
   const recipientCount = cfg ? cfg.recipients.length : 0;
 
-  // Vault JSON: { balance: string, ... } (USDC u64 amount in base units)
-  const taxJson = taxObj.object?.json as { balance?: string } | null | undefined;
-  const savingsJson = savingsObj.object?.json as { balance?: string } | null | undefined;
-  const taxBalance = BigInt(taxJson?.balance ?? "0");
-  const savingsBalance = BigInt(savingsJson?.balance ?? "0");
+  // Balance<T> serializes as { balance: { value: "12345" } } or flat { balance: "12345" }
+  type VaultJson = { balance?: { value?: string } | string } | null | undefined;
+  function extractVaultBalance(j: VaultJson): bigint {
+    const b = j?.balance;
+    if (b == null) return 0n;
+    if (typeof b === "string") return BigInt(b);
+    return BigInt(b.value ?? "0");
+  }
+  const taxBalance = extractVaultBalance(taxObj.object?.json as VaultJson);
+  const savingsBalance = extractVaultBalance(savingsObj.object?.json as VaultJson);
 
   return { taxBps, savingsBps, recipientCount, taxBalance, savingsBalance };
 }
