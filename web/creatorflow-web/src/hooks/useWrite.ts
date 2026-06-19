@@ -61,37 +61,6 @@ export async function pollUntil<T>(
 }
 
 // ---------------------------------------------------------------------------
-// Internal helper — shared hook factory
-// ---------------------------------------------------------------------------
-
-function useTx(
-  build: (kit: ReturnType<typeof useDAppKit>) => Promise<Outcome>,
-): { run: () => Promise<Outcome>; pending: boolean; error: string | null } {
-  const kit = useDAppKit();
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function run(): Promise<Outcome> {
-    setPending(true);
-    setError(null);
-    try {
-      const o = await build(kit);
-      if (!o.ok) setError(o.error);
-      return o;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const mapped = mapAbort(msg);
-      setError(mapped);
-      return { ok: false, error: mapped };
-    } finally {
-      setPending(false);
-    }
-  }
-
-  return { run, pending, error };
-}
-
-// ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
 
