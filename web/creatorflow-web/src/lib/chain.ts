@@ -36,6 +36,7 @@ export async function getConfigVersion(configId: string): Promise<bigint> {
     objectId: configId,
     include: { json: true },
   });
+  if (!object) throw new Error(`config object not found: ${configId}`);
   // json contains the Move struct fields at top level
   return extractVersion({ fields: object.json ?? {} });
 }
