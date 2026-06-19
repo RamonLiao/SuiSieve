@@ -53,6 +53,14 @@ export async function getUsdcCoinIds(owner: string): Promise<string[]> {
 }
 
 /**
+ * Returns total USDC balance for `owner` in base units (6 decimals).
+ */
+export async function getUsdcBalance(owner: string): Promise<bigint> {
+  const { balance } = await getClient().getBalance({ owner, coinType: USDC_TYPE });
+  return BigInt(balance.coinBalance ?? "0");
+}
+
+/**
  * Finds the first owned cap object of the given kind for `owner`.
  *
  * API note: gRPC 2.19 uses `listOwnedObjects({ owner, type })` with a `type`

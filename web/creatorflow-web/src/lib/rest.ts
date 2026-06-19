@@ -22,6 +22,7 @@ const qs = (params: Record<string, string | undefined>): string => {
 
 export const listConfigs = (owner: string, cursor?: string) =>
   get<Page<Row>>(`/configs${qs({ owner, cursor })}`);
+export const getConfig = (id: string) => get<Row>(`/configs/${enc(id)}`);
 export const getConfigSummary = (id: string) => get<Row>(`/configs/${enc(id)}/summary`);
 export const listSplits = (id: string, cursor?: string) =>
   get<Page<Row>>(`/configs/${enc(id)}/splits${qs({ cursor })}`);

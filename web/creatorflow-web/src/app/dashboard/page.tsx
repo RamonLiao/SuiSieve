@@ -8,6 +8,7 @@ import { listConfigs } from "@/lib/rest";
 import { getClient } from "@/lib/chain";
 import { ConfigCard } from "@/components/ui/ConfigCard";
 import { VaultBalance } from "@/components/ui/VaultBalance";
+import { extractVaultBalance } from "@/lib/vault";
 
 // REST row shape from configCreated table (serialized via serializeRow)
 type ConfigRow = {
@@ -51,12 +52,6 @@ async function fetchConfigChainData(
 
   // Balance<T> serializes as { balance: { value: "12345" } } or flat { balance: "12345" }
   type VaultJson = { balance?: { value?: string } | string } | null | undefined;
-  function extractVaultBalance(j: VaultJson): bigint {
-    const b = j?.balance;
-    if (b == null) return 0n;
-    if (typeof b === "string") return BigInt(b);
-    return BigInt(b.value ?? "0");
-  }
   const taxBalance = extractVaultBalance(taxObj.object?.json as VaultJson);
   const savingsBalance = extractVaultBalance(savingsObj.object?.json as VaultJson);
 
