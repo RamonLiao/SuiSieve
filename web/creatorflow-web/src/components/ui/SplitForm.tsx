@@ -80,7 +80,7 @@ export function SplitForm({ value, onChange, error, onSubmit, submitting }: { va
                   <label className="block text-[0.65rem] font-bold uppercase tracking-[0.16em] text-slate-500">
                     Share
                     <span className="relative mt-1.5 block">
-                      <input type="number" min={0} max={10000} value={recipient.bps} onChange={(event) => updateRecipient(index, "bps", Number(event.target.value))} className={`${inputClass} pr-12 font-mono tabular-nums`} />
+                      <input type="text" inputMode="numeric" value={recipient.bps} onChange={(event) => updateRecipient(index, "bps", Number(event.target.value.replace(/\D/g, "")))} className={`${inputClass} pr-12 font-mono tabular-nums`} />
                       <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[0.65rem] font-bold text-slate-600">BPS</span>
                     </span>
                   </label>
@@ -103,7 +103,7 @@ export function SplitForm({ value, onChange, error, onSubmit, submitting }: { va
               <label key={field} className="rounded-xl border border-slate-800 bg-slate-900/45 p-3 text-[0.65rem] font-bold uppercase tracking-[0.14em] text-slate-500">
                 {label}
                 <span className="relative mt-2 block">
-                  <input type="number" min={0} max={10000} value={value[field]} onChange={(event) => onChange({ ...value, [field]: Number(event.target.value) })} className={`${inputClass} pr-12 font-mono tabular-nums`} />
+                  <input type="text" inputMode="numeric" value={value[field]} onChange={(event) => onChange({ ...value, [field]: Number(event.target.value.replace(/\D/g, "")) })} className={`${inputClass} pr-12 font-mono tabular-nums`} />
                   <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[0.65rem] text-slate-600">BPS</span>
                 </span>
               </label>
