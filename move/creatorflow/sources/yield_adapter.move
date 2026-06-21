@@ -133,6 +133,23 @@ public(package) fun redeem(
     mock_lending::redeem(market, amount, ctx)
 }
 
+// --- test-only helpers -------------------------------------------------------
+
+/// Expose `settle` with an explicit `now_ms` so tests can drive `EClockRewind`
+/// without needing a backwards-moving Clock (Sui's clock enforces monotonicity,
+/// making it impossible to reach the guard through the normal Clock API).
+#[test_only]
+public fun settle_at_for_testing(
+    market: &mut MockMarket,
+    vault: &mut SavingsVault,
+    now_ms: u64,
+) {
+    let uid = vaults::savings_uid_mut(vault);
+    assert!(df::exists<YieldKey>(uid, YieldKey()), ENoPosition);
+    let position = df::borrow_mut<YieldKey, YieldPosition>(uid, YieldKey());
+    settle(market, position, now_ms);
+}
+
 // --- getters -----------------------------------------------------------------
 
 /// Whether the savings vault has an open yield position.

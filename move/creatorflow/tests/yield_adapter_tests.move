@@ -1,7 +1,7 @@
 #[test_only]
 module creatorflow::yield_adapter_tests;
 
-use creatorflow::yield_adapter::{Self, EWrongCap, ENoPosition, EInsufficientYield, EZeroRedeem};
+use creatorflow::yield_adapter::{Self, EWrongCap, ENoPosition, EInsufficientYield, EZeroRedeem, EStrategyMismatch, EClockRewind};
 use creatorflow::mock_lending::{Self, MockMarket, MockMarketCap};
 use creatorflow::protocol_config::{Self, AdminCap};
 use creatorflow::split_config::{Self, StrategyRef};
@@ -17,6 +17,7 @@ const CREATOR: address = @0xC;
 
 fun config_id(): ID { object::id_from_address(@0xC0F19) }
 fun strategy(): StrategyRef { split_config::new_strategy_ref(0, object::id_from_address(@0x5CA110)) }
+fun strategy2(): StrategyRef { split_config::new_strategy_ref(0, object::id_from_address(@0xDEAD)) }
 fun mint(amount: u64, sc: &mut ts::Scenario): coin::Coin<USDC> { coin::mint_for_testing<USDC>(amount, sc.ctx()) }
 fun new_vault(sc: &mut ts::Scenario): (SavingsVault, SavingsCap) { vaults::new_savings_vault(config_id(), sc.ctx()) }
 
@@ -170,6 +171,40 @@ fun sweep_moves_banked_savings_into_position() {
     yield_adapter::sweep(&mut market, &mut vault, &cap, 700_000, strategy(), &clk, sc.ctx());
     assert_eq!(vaults::savings_balance(&vault), 300_000);
     assert_eq!(yield_adapter::position_principal(&vault), 700_000);
+    clock::destroy_for_testing(clk);
+    destroy(vault); destroy(cap); destroy(mcap); ts::return_shared(market); sc.end();
+}
+
+// Red-team vector #11: second deposit with a different StrategyRef must abort.
+#[test, expected_failure(abort_code = EStrategyMismatch)]
+fun deposit_with_mismatched_strategy_aborts() {
+    let mut sc = ts::begin(CREATOR);
+    let (mut market, mcap) = new_market(&mut sc);
+    let (mut vault, cap) = new_vault(&mut sc);
+    let clk = clock::create_for_testing(sc.ctx());
+    // First deposit pins strategy().
+    yield_adapter::deposit(&mut market, &mut vault, mint(500_000, &mut sc), strategy(), &clk);
+    // Second deposit with strategy2() → position.strategy != strategy2 → EStrategyMismatch.
+    yield_adapter::deposit(&mut market, &mut vault, mint(100_000, &mut sc), strategy2(), &clk);
+    clock::destroy_for_testing(clk);
+    destroy(vault); destroy(cap); destroy(mcap); ts::return_shared(market); sc.end();
+}
+
+// Red-team vector #5: settle asserts now >= deposited_at_ms.
+// Sui's Clock enforces monotonicity (set_for_testing aborts on backwards timestamps),
+// so we drive the guard via the test-only settle_at_for_testing entry point which
+// calls settle() directly with a fabricated past timestamp.
+#[test, expected_failure(abort_code = EClockRewind)]
+fun settle_with_rewound_clock_aborts() {
+    let mut sc = ts::begin(CREATOR);
+    let (mut market, mcap) = new_market(&mut sc);
+    let (mut vault, cap) = new_vault(&mut sc);
+    let mut clk = clock::create_for_testing(sc.ctx());
+    // Deposit at t=10_000 → pins deposited_at_ms=10_000.
+    clock::set_for_testing(&mut clk, 10_000);
+    yield_adapter::deposit(&mut market, &mut vault, mint(500_000, &mut sc), strategy(), &clk);
+    // Call settle with now_ms=1_000 < deposited_at_ms=10_000 → EClockRewind.
+    yield_adapter::settle_at_for_testing(&mut market, &mut vault, 1_000);
     clock::destroy_for_testing(clk);
     destroy(vault); destroy(cap); destroy(mcap); ts::return_shared(market); sc.end();
 }
