@@ -1,15 +1,15 @@
 export const NETWORK = "testnet" as const;
 export const PACKAGE_ID =
-  "0x0fda0d5bd9f042460d8ed51eaeaf2fd21e9d4baa74de75b031096516e047a656";
+  "0xe16643b188985330b377f01681223a95dae2256515c7a9f7c0b610ab03739381";
 export const PROTOCOL_CONFIG_ID =
-  "0x695297e727cd5fa636deff6578b3e5f53aa496ecd323248c1d072b58d9891bcc";
+  "0x979f40b1b0ba55296e8842c3a627fcca2822311487ac32ef15677a69cce3ac5d";
 export const USDC_TYPE =
   "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC";
 export const CLOCK_ID = "0x6";
-// Created post-upgrade via router/mock_lending create_market one-shot (see plan Task 7).
-// Placeholder until deploy; replace with the real shared object id.
+// Shared MockMarket created via mock_lending::create_market(&AdminCap) one-shot
+// (Task 7 fresh-deploy 2026-06-22, tx CRNwZq1N…). interest_buffer seeded 5 USDC.
 export const MOCK_MARKET_ID =
-  "0x0000000000000000000000000000000000000000000000000000000000000000";
+  "0x9a1ad8a046c9365b00d77ed8ca6bbc76a73996291b26ed1b38f41347e32f18a9";
 export const MAX_RECIPIENTS = 16;
 export const BPS_TOTAL = 10_000;
 // On-chain protocol fee window. These mirror the deployed ProtocolConfig

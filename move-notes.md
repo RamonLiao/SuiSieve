@@ -368,3 +368,28 @@ caveat：latency = validator execution-ack（非 checkpoint finality）；split 
 **已知限制 / 待辦**：①利息 first-touch-wins、非公平分配（whale 可搶光 buffer），demo 接受、pro-rata 是 v2；②`total_supplied` 是 lifetime 計數器非 live invariant；③**Task 7 testnet 部署待跑**（upgrade→create_market→seed→e2e→換前端 `MOCK_MARKET_ID` 從 `0x0`）；④dashboard yield-panel UI 接線（讀 `position_value` via gRPC）非本 plan scope。
 
 **spec/plan**：`docs/superpowers/specs/2026-06-21-yield-mock-venue-design.md`（v4）、`docs/superpowers/plans/2026-06-22-yield-mock-venue.md`。
+
+## 2026-06-22 — Task 7 testnet 部署（mock yield venue 上鏈 + e2e）
+
+**踩雷：in-place upgrade 不可行 → 改 fresh publish。** plan Task 7 假設用 UpgradeCap in-place upgrade，但 yield redesign 改了 deployed package 的 public interface：`YieldPosition` struct 換欄位（`balance: Balance<USDC>` → `{strategy, principal, deposited_at_ms}`）、`position_value`/`redeem_yield` 簽章變更。Sui `compatible` upgrade policy（已是最寬鬆）**禁止改 public struct 欄位**，`--skip-verify-compatibility` 只跳過 client 預檢、on-chain validator 仍回 `IncompatibleUpgrade`。函式可用 additive(`_v2`) 繞，struct layout 改了無解 → 必 fresh publish。
+
+**migration gate 用鏈上事實驗證（非信 plan 推理）**：舊 stub 的 `deposit`（df::add YieldPosition）其實是 live 的（plan 寫「從不建 position」是錯的）；但查 deployed 0x0fda 的 `SplitExecuted.yield_included` = 50 筆全 false，且舊 router 無 sweep 入口 → 鏈上零個舊 layout position df → 即使硬走 skip-verify 也資料安全。最終仍因 struct policy 改走 fresh publish。
+
+**fresh publish 新 ids（testnet）**：
+
+| 物件 | id |
+|------|-----|
+| PackageID | `0xe16643b188985330b377f01681223a95dae2256515c7a9f7c0b610ab03739381` |
+| ProtocolConfig | `0x979f40b1b0ba55296e8842c3a627fcca2822311487ac32ef15677a69cce3ac5d`（shared）|
+| AdminCap | `0xf9d51f53a232984379d351a2e375289c0c17935691e997866cdb4d31fb0cad63` |
+| UpgradeCap | `0x05f1d2b69c60f80dd965dfe0a2a67c969c63e0cded0bee332152eb51ae22dfb1` |
+| MockMarket | `0x9a1ad8a046c9365b00d77ed8ca6bbc76a73996291b26ed1b38f41347e32f18a9`（shared）|
+| MockMarketCap | `0xbc52ff6f9f0cdd0a7b4fb2b461266b9c1ef8b597168d8fdefc1f46ea5235862d` |
+
+**e2e tx digests**：publish `8pttJibrzrR6dSoBiot5jrfaojuZVCpD1SVATZokdq5m` / create_market `CRNwZq1NwD7Ctznr73pcuwzvzfRDqwG4MmL56HZGDdPy` / seed 5 USDC `BX4sguoiRPrweAzHPJTNzhyqBHhJq4ben3AVabbJHT1K` / execute_split_with_yield（10 USDC，yield_amount=8.9 USDC）`HWui5begFx9cmEqxPNpZsL2BEAbsSEVAfSzp8cbqX3wX` / redeem_yield `EMk3HAhLZXJa941Q3dDJZbNyCJvcSoY81oFqQDeu4Ja`。
+
+**利息證明**：存入 8.9 USDC，redeem **8.95 USDC 成功**（> 存入額）→ settle 從 interest_buffer 搬 0.05 USDC 利息進 principal，best-effort accrual 上鏈驗證 OK。
+
+**前端**：`constants.ts` 更新 PACKAGE_ID / PROTOCOL_CONFIG_ID / MOCK_MARKET_ID（`0x0`→真值）。52 vitest pass、tsc clean。
+
+**已知限制**：①舊 0x0fda package 棄用留鏈上（無害）；②fresh publish 後 load-test fixtures（舊 config/vault ids）作廢，需重跑才有資料；③UpgradeCap 仍單簽（mainnet 前轉 multisig）；④e2e 用的 demo config（`0x367fe45…`）tax1000/savings8900/fee100/yield8900、無 recipient，僅供驗證。
