@@ -309,3 +309,40 @@ spec `docs/superpowers/specs/2026-06-15-indexer-design.md`（§ingest + shared P
 - **REST 讀回**（`/configs/:id/splits`、`/summary`、`/collaborators/:addr/earnings`）全部一致；payout 走 4-tuple cursor（含 payoutIdx，Phase 3 F1 修正）正確攤平。
 - **結論**：鏈上 hot path → checkpoint → Rust ingest（含 SplitExecuted 內嵌 recipient_payouts 攤平）→ Postgres → Hono REST 全鏈路 e2e **PASS**。Phase 1–3 indexer 全覆蓋（ConfigCreated + SplitExecuted/recipient_payout 雙路徑皆實測入庫）。
 - **剩餘**：gas 真實絕對數字 = 本 tx ~0.0037 SUI（單 recipient、無 yield 的最小 split）；UpgradeCap 仍單簽待轉 multisig（mainnet 前）。
+
+---
+
+## 2026-06-21 — T10 contention load test（testnet single-key N-coin fan）執行結果 + v1 mitigation 裁決
+
+**目的**：量測單一 creator `execute_split` 在並發 burst 下的吞吐/延遲，隔離到 shared `TaxVault`+`SavingsVault` 競爭，裁決 spec §15 v1 mitigation。
+
+**手法**：harness `web/creatorflow-web/scripts/t10-load-test.mts`（單 key、testnet）。每 tier N：預切 N 個 owned USDC + gas 幣 → **pre-build N 筆 tx bytes**（object resolution 全在 prep）→ 並發只計時 sign+execute。唯一 shared 競爭點 = config `0x0f27f141…ced63f` 的 tax_vault `0x19e71e08…` + savings `0xa9fbfee1…`。abort 分 6 桶。`AMOUNT_RAW=0.01 USDC`、`FIXED_GAS_BUDGET=0.02 SUI`、無 burst retry。
+
+**結果表（authoritative run，public RPC `rpc.testnet.sui.io`）**：
+
+| N | wall(ms) | TPS | p50 | p90 | p99 | success | congestion | locked | terminal | ratelimited | network |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10 | 755 | 13.2 | 706 | 746 | 752 | 10 | 0 | 0 | 0 | 0 | 0 |
+| 50 | 961 | 52.1 | 782 | 851 | 932 | 50 | 0 | 0 | 0 | 0 | 0 |
+| 150 | 1900 | 79.0 | 942 | 1730 | 1837 | 150 | 0 | 0 | 0 | 0 | 0 |
+| 350 | 3728 | 47.7 | 1441 | 2498 | 2829 | 178 | 0 | 0 | 0 | 172 | 0 |
+
+caveat：latency = validator execution-ack（非 checkpoint finality）；split 數學守恆由鏈上 Move tests 保證。
+
+**關鍵發現**：
+1. **`congestion=0`、`locked=0` 全 tier** → shared TaxVault+SavingsVault 完全**沒有** Protocol-124 per-shared-object congestion control 取消（`ExecutionCancelledDueToSharedObjectCongestion`），也**沒有** owned-coin 等價/隔離洩漏（`locked`>0 才代表 per-tx 專屬幣洩漏，全程 0 = 隔離成立）。
+2. **N=350 的 172 筆失敗全是 `RpcError: Too Many Requests`（HTTP 429）** = **public RPC endpoint 端 client throttle**，非合約 abort。TPS 在 10→50→150 線性爬升（13→52→79）後於 350 回落到 48，純粹因 RPC 限流砍掉 ~half 的 tx。
+3. ⇒ **合約層的競爭天花板根本沒被測到**：public testnet RPC 的限流先封頂。要量到真正的 vault 序列化上限需要 dedicated fullnode / 自架節點 / 更高 rate limit。
+
+**v1 mitigation 裁決**：依 plan 裁決規則（`congestion≈0` 跨 tier）→ **「MVP throughput acceptable；目前不需要 spec §15 的 N sub-vault sharding」**。
+- 觀測到的 plateau（N≈150 後 TPS 不再爬）**不是** vault 競爭造成，是 RPC 429 → sharding 改不掉這個瓶頸。
+- shared-vault sharding（spec §15）屬**過早優化**：在我們能觀測的負載範圍內，雙 shared vault 的 consensus 序列化從未成為 limiter。
+- **待辦（非 blocking，記入 §15）**：若 mainnet 要驗證真實 vault 天花板，改用自架 fullnode 重跑同 harness（移除 RPC 限流變因）後再決定 sharding；屆時 `congestion`>0 且隨 N 成長才觸發 sharding（建議起始 K=4 round-robin）。
+
+**harness 工程踩雷（3 個，全已修進 code）**：
+- **gRPC SDK 2.0 API rename**：`getCoins`/`.data`/`.coinObjectId`（JSON-RPC 1.x）→ `listCoins`/`.objects`/`.objectId`；effects 取 `changedObjects[].outputVersion/outputDigest`、`idOperation==="Created"`。
+- **owned-coin version drift（prep 階段）**：fan-effects 的 `outputVersion` 會落後 fullnode 可消費版本（gas smashing）→ pre-build 前用 `freshSuiRefs()`（paginated `listCoins(SUI)`）重讀權威 ref；fan tx + pre-build 各加 bounded `withRebuildRetry`（**僅 prep 重試，burst 永不重試**以免遮蔽天花板）。
+- **gRPC-web trailer percent-encoding**：RpcError message 是 `needs%20to%20be%20rebuilt`（空白 = `%20`），未解碼則 retry-detection 與 `classify()` 全部 mis-match → 每個 abort 被誤丟進 `terminal`。加 `decodeErr()`（decodeURIComponent）在所有 error 捕獲點正規化。**這個 bug 會讓 run「假成功」卻把 congestion/locked 全錯分**，是本次最關鍵的正確性修正。
+- `classify` 補 `(?:not |un)available for consumption`（validators 兩種措辭）+ 新增 `ratelimited` 桶（429 是 infra 天花板，不可與合約 abort 混淆）。
+
+**產物**：`scripts/t10-lib.ts`（純函式 percentile/classify/conserves，5 vitest PASS）+ `scripts/t10-load-test.mts`（harness）。spec `docs/superpowers/specs/2026-06-21-t10-load-test-design.md`、plan `docs/superpowers/plans/2026-06-21-t10-load-test.md`。tiered run 實耗 ≈5.6 USDC + <2 SUI gas（×多次 debug run）。

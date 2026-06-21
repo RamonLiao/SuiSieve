@@ -5,13 +5,17 @@ export function percentile(sortedAsc: number[], p: number): number {
   return sortedAsc[rank - 1];
 }
 
-export type Bucket = "success" | "congestion" | "locked" | "terminal" | "network";
+export type Bucket = "success" | "congestion" | "locked" | "terminal" | "ratelimited" | "network";
 
 export function classify(r: { ok: true } | { ok: false; error: string }): Bucket {
   if (r.ok) return "success";
   const e = r.error;
   if (/congest/i.test(e)) return "congestion";
-  if (/lock|equivocat|not available for consumption/i.test(e)) return "locked";
+  // owned-object version conflict / equivocation: validators report it as either
+  // "not available" or "unavailable" for consumption depending on the path.
+  if (/lock|equivocat|(?:not |un)available for consumption/i.test(e)) return "locked";
+  // public-RPC throttle (HTTP 429) — a client/infra ceiling, NOT a contract abort.
+  if (/too many requests|429|rate.?limit|resource_exhausted/i.test(e)) return "ratelimited";
   // network must precede the generic terminal fallback: "fetch failed ECONNRESET"
   // contains no abort/status token, so it would otherwise fall through to terminal.
   if (/fetch|econn|timeout|network|socket/i.test(e)) return "network";

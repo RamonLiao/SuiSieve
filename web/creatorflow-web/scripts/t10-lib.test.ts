@@ -15,6 +15,10 @@ test("classify buckets the T10 congestion ceiling distinctly", () => {
   expect(classify({ ok: true })).toBe("success");
   expect(classify({ ok: false, error: "ExecutionCancelledDueToSharedObjectCongestion" })).toBe("congestion");
   expect(classify({ ok: false, error: "Object 0x.. is not available for consumption, locked" })).toBe("locked");
+  // validators also phrase owned-object version conflict as "unavailable for consumption"
+  expect(classify({ ok: false, error: "object 0x.. version 0x36 is unavailable for consumption, current version: 0x37" })).toBe("locked");
+  // public-RPC throttle is an infra ceiling, must NOT be conflated with contract aborts
+  expect(classify({ ok: false, error: "RpcError: Too Many Requests" })).toBe("ratelimited");
   expect(classify({ ok: false, error: "MoveAbort .. EConfigChanged" })).toBe("terminal");
   expect(classify({ ok: false, error: "fetch failed ECONNRESET" })).toBe("network");
 });
