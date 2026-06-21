@@ -1,6 +1,7 @@
 #[test_only]
 module creatorflow::router_tests;
 
+use creatorflow::mock_lending::{Self, MockMarket, MockMarketCap};
 use creatorflow::router;
 use creatorflow::split_config::{Self, SplitConfig};
 use creatorflow::protocol_config::{Self, ProtocolConfig, AdminCap};
@@ -68,6 +69,29 @@ fun create(yield_strategy: Option<split_config::StrategyRef>, sc: &mut ts::Scena
     sc.next_tx(CREATOR);
 }
 
+// Create + seed a MockMarket in CREATOR's scenario. Buffer funded so interest is
+// realizable in tests that advance the clock.
+fun funded_market(sc: &mut ts::Scenario): (MockMarket, MockMarketCap) {
+    let admin = sc.take_from_sender<AdminCap>();
+    mock_lending::create_market(&admin, sc.ctx());
+    sc.return_to_sender(admin);
+    sc.next_tx(CREATOR);
+    let mut mkt = sc.take_shared<MockMarket>();
+    let cap = sc.take_from_sender<MockMarketCap>();
+    mock_lending::seed(&mut mkt, &cap, mint(1_000_000, sc));
+    (mkt, cap)
+}
+
+// Variant of `create` with a caller-chosen yield_bps (for the zero-slice test).
+fun create_yield_bps(yield_bps: u16, sc: &mut ts::Scenario) {
+    let protocol = sc.take_shared<ProtocolConfig>();
+    router::create_config_and_vaults(
+        &protocol, standard_recipients(), 500, 450, 50, yield_bps, strategy(), sc.ctx(),
+    );
+    ts::return_shared(protocol);
+    sc.next_tx(CREATOR);
+}
+
 // --- create_config_and_vaults ------------------------------------------------
 
 #[test]
@@ -123,13 +147,14 @@ fun create_emits_config_created_once() {
     sc.end();
 }
 
-// --- execute_split: happy path -----------------------------------------------
+// --- execute_split_with_yield: happy path ------------------------------------
 
 #[test]
-fun execute_split_routes_all_slices_and_emits_once() {
+fun execute_split_with_yield_routes_all_slices_and_emits_once() {
     let mut sc = ts::begin(CREATOR);
     init_protocol(&mut sc);
     create(strategy(), &mut sc);
+    let (mut mkt, mcap) = funded_market(&mut sc);
 
     let config = sc.take_shared<SplitConfig>();
     let protocol = sc.take_shared<ProtocolConfig>();
@@ -140,43 +165,36 @@ fun execute_split_routes_all_slices_and_emits_once() {
     sc.next_tx(PAYER);
     let pay = mint(amount, &mut sc);
     let clk = clock::create_for_testing(sc.ctx());
-    router::execute_split(
-        &config, &protocol, &mut tax_vault, &mut savings_vault,
-        pay, true, 0, &clk, sc.ctx(),
+    router::execute_split_with_yield(
+        &config, &protocol, &mut mkt, &mut tax_vault, &mut savings_vault,
+        pay, 0, &clk, sc.ctx(),
     );
     let eff = sc.next_tx(CREATOR);
-
-    // Exactly one SplitExecuted event for the whole settlement.
     assert_eq!(ts::num_user_events(&eff), 1);
 
-    // tax 5% = 50_000; savings 4.5% = 45_000, of which yield 4% = 40_000 routed
-    // to the position, leaving 5_000 in the savings vault balance.
     assert_eq!(vaults::tax_balance(&tax_vault), 50_000);
     assert_eq!(vaults::savings_balance(&savings_vault), 5_000);
-    assert_eq!(yield_adapter::position_value(&savings_vault), 40_000);
+    assert_eq!(yield_adapter::position_value(&savings_vault, &mkt, &clk), 40_000);
+    assert_eq!(mock_lending::principal_pool_value(&mkt), 40_000);
 
-    // recipients: alice 60% = 600_000; bob (last) 30% = 300_000 (exact, no dust).
     let alice_coin = sc.take_from_address<Coin<USDC>>(ALICE);
     let bob_coin = sc.take_from_address<Coin<USDC>>(BOB);
     let fee_coin = sc.take_from_address<Coin<USDC>>(TREASURY);
     assert_eq!(alice_coin.value(), 600_000);
     assert_eq!(bob_coin.value(), 300_000);
-    assert_eq!(fee_coin.value(), 5_000); // 0.5%
-
-    // Conservation: nothing created or destroyed.
+    assert_eq!(fee_coin.value(), 5_000);
+    // 5-term conservation on the yield path (red-team #6).
     let total = alice_coin.value() + bob_coin.value() + fee_coin.value()
         + vaults::tax_balance(&tax_vault) + vaults::savings_balance(&savings_vault)
-        + yield_adapter::position_value(&savings_vault);
+        + yield_adapter::position_value(&savings_vault, &mkt, &clk);
     assert_eq!(total, amount);
 
-    destroy(alice_coin);
-    destroy(bob_coin);
-    destroy(fee_coin);
+    destroy(alice_coin); destroy(bob_coin); destroy(fee_coin);
     clk.destroy_for_testing();
-    ts::return_shared(config);
-    ts::return_shared(protocol);
-    ts::return_shared(tax_vault);
-    ts::return_shared(savings_vault);
+    destroy(mcap);
+    ts::return_shared(config); ts::return_shared(protocol);
+    ts::return_shared(tax_vault); ts::return_shared(savings_vault);
+    ts::return_shared(mkt);
     sc.end();
 }
 
@@ -361,9 +379,9 @@ fun execute_split_dust_goes_to_last_recipient_no_loss() {
     let fee_coin = sc.take_from_address<Coin<USDC>>(TREASURY);
 
     // Everything still sums to the exact gross — no micro-USDC vanished.
+    // Plain path: yield slice stays in savings, so savings_balance covers it.
     let total = alice_coin.value() + bob_coin.value() + fee_coin.value()
-        + vaults::tax_balance(&tax_vault) + vaults::savings_balance(&savings_vault)
-        + yield_adapter::position_value(&savings_vault);
+        + vaults::tax_balance(&tax_vault) + vaults::savings_balance(&savings_vault);
     assert_eq!(total, amount);
     // alice took her exact floor; bob (last) carries the dust units on top.
     assert_eq!(alice_coin.value(), 600_001); // floor(1_000_003 * 0.6)
@@ -420,19 +438,20 @@ fun withdraw_and_redeem_route_funds_to_caller() {
     let mut sc = ts::begin(CREATOR);
     init_protocol(&mut sc);
     create(strategy(), &mut sc);
+    let (mut mkt, mcap) = funded_market(&mut sc);
 
     let config = sc.take_shared<SplitConfig>();
     let protocol = sc.take_shared<ProtocolConfig>();
     let mut tax_vault = sc.take_shared<TaxVault>();
     let mut savings_vault = sc.take_shared<SavingsVault>();
 
-    // Fund the vaults via one split.
+    // Fund the vaults via one split using the yield path so a position exists.
     sc.next_tx(PAYER);
     let pay = mint(1_000_000, &mut sc);
     let clk = clock::create_for_testing(sc.ctx());
-    router::execute_split(
-        &config, &protocol, &mut tax_vault, &mut savings_vault,
-        pay, true, 0, &clk, sc.ctx(),
+    router::execute_split_with_yield(
+        &config, &protocol, &mut mkt, &mut tax_vault, &mut savings_vault,
+        pay, 0, &clk, sc.ctx(),
     );
     sc.next_tx(CREATOR);
     cleanup_payouts(&sc);
@@ -442,12 +461,12 @@ fun withdraw_and_redeem_route_funds_to_caller() {
 
     router::withdraw_tax(&mut tax_vault, &tax_cap, 20_000, sc.ctx());
     router::withdraw_savings(&mut savings_vault, &savings_cap, 1_000, sc.ctx());
-    router::redeem_yield(&mut savings_vault, &savings_cap, 10_000, sc.ctx());
+    router::redeem_yield(&mut mkt, &mut savings_vault, &savings_cap, 10_000, &clk, sc.ctx());
     sc.next_tx(CREATOR);
 
     assert_eq!(vaults::tax_balance(&tax_vault), 30_000);          // 50_000 - 20_000
     assert_eq!(vaults::savings_balance(&savings_vault), 4_000);   // 5_000 - 1_000
-    assert_eq!(yield_adapter::position_value(&savings_vault), 30_000); // 40_000 - 10_000
+    assert_eq!(yield_adapter::position_value(&savings_vault, &mkt, &clk), 30_000); // 40_000 - 10_000
 
     // Three coins landed with the creator.
     let total = drain_address(&sc, CREATOR);
@@ -456,10 +475,10 @@ fun withdraw_and_redeem_route_funds_to_caller() {
     clk.destroy_for_testing();
     sc.return_to_sender(tax_cap);
     sc.return_to_sender(savings_cap);
-    ts::return_shared(config);
-    ts::return_shared(protocol);
-    ts::return_shared(tax_vault);
-    ts::return_shared(savings_vault);
+    destroy(mcap);
+    ts::return_shared(config); ts::return_shared(protocol);
+    ts::return_shared(tax_vault); ts::return_shared(savings_vault);
+    ts::return_shared(mkt);
     sc.end();
 }
 
@@ -515,11 +534,9 @@ fun monkey_varied_amounts_conserve_value() {
     };
     sc.next_tx(CREATOR);
 
-    // Sum everything that left the system (recipient coins) plus everything that
-    // stayed (vault balances + yield position) — must equal total pushed in.
+    // Plain path: yield slice stays in savings. Conservation: tax + savings covers all.
     let mut received = vaults::tax_balance(&tax_vault)
-        + vaults::savings_balance(&savings_vault)
-        + yield_adapter::position_value(&savings_vault);
+        + vaults::savings_balance(&savings_vault);
     received = received + drain_address(&sc, ALICE);
     received = received + drain_address(&sc, BOB);
     received = received + drain_address(&sc, TREASURY);
@@ -530,6 +547,117 @@ fun monkey_varied_amounts_conserve_value() {
     ts::return_shared(protocol);
     ts::return_shared(tax_vault);
     ts::return_shared(savings_vault);
+    sc.end();
+}
+
+// --- New: zero yield_bps with yield path → no position, no zero-coin --------
+
+// yield_bps=0 with strategy=some via _with_yield → NO position, no zero-coin (red-team #5).
+#[test]
+fun zero_yield_slice_creates_no_position() {
+    let mut sc = ts::begin(CREATOR);
+    init_protocol(&mut sc);
+    create_yield_bps(0, &mut sc);
+    let (mut mkt, mcap) = funded_market(&mut sc);
+
+    let config = sc.take_shared<SplitConfig>();
+    let protocol = sc.take_shared<ProtocolConfig>();
+    let mut tax_vault = sc.take_shared<TaxVault>();
+    let mut savings_vault = sc.take_shared<SavingsVault>();
+
+    sc.next_tx(PAYER);
+    let pay = mint(1_000_000, &mut sc);
+    let clk = clock::create_for_testing(sc.ctx());
+    router::execute_split_with_yield(
+        &config, &protocol, &mut mkt, &mut tax_vault, &mut savings_vault,
+        pay, 0, &clk, sc.ctx(),
+    );
+    sc.next_tx(CREATOR);
+
+    assert!(!yield_adapter::has_position(&savings_vault));        // no position created
+    assert_eq!(mock_lending::principal_pool_value(&mkt), 0);      // no zero-coin supplied
+    assert_eq!(vaults::savings_balance(&savings_vault), 45_000);  // full savings slice stays
+
+    clk.destroy_for_testing();
+    cleanup_payouts(&sc);
+    destroy(mcap);
+    ts::return_shared(config); ts::return_shared(protocol);
+    ts::return_shared(tax_vault); ts::return_shared(savings_vault);
+    ts::return_shared(mkt);
+    sc.end();
+}
+
+// Plain execute_split NEVER mutates the market (T10 carve-out regression lock).
+#[test]
+fun plain_execute_split_does_not_touch_market() {
+    let mut sc = ts::begin(CREATOR);
+    init_protocol(&mut sc);
+    create(strategy(), &mut sc);
+    let (mkt, mcap) = funded_market(&mut sc);
+
+    let config = sc.take_shared<SplitConfig>();
+    let protocol = sc.take_shared<ProtocolConfig>();
+    let mut tax_vault = sc.take_shared<TaxVault>();
+    let mut savings_vault = sc.take_shared<SavingsVault>();
+
+    sc.next_tx(PAYER);
+    let pay = mint(1_000_000, &mut sc);
+    let clk = clock::create_for_testing(sc.ctx());
+    router::execute_split(
+        &config, &protocol, &mut tax_vault, &mut savings_vault,
+        pay, true, 0, &clk, sc.ctx(),  // include_yield ignored on the plain path
+    );
+    sc.next_tx(CREATOR);
+
+    // Market untouched: no supply happened, no position. Plain path doesn't take it.
+    assert_eq!(mock_lending::principal_pool_value(&mkt), 0);
+    assert_eq!(mock_lending::total_supplied(&mkt), 0);
+    assert!(!yield_adapter::has_position(&savings_vault));
+    assert_eq!(vaults::savings_balance(&savings_vault), 45_000); // slice stayed in savings
+
+    clk.destroy_for_testing();
+    cleanup_payouts(&sc);
+    destroy(mcap);
+    ts::return_shared(config); ts::return_shared(protocol);
+    ts::return_shared(tax_vault); ts::return_shared(savings_vault);
+    ts::return_shared(mkt);
+    sc.end();
+}
+
+// Intra-PTB deposit→redeem extracts 0 interest (single Clock snapshot, red-team #4).
+#[test]
+fun intra_tx_deposit_then_redeem_zero_interest() {
+    let mut sc = ts::begin(CREATOR);
+    init_protocol(&mut sc);
+    create(strategy(), &mut sc);
+    let (mut mkt, mcap) = funded_market(&mut sc);
+
+    let config = sc.take_shared<SplitConfig>();
+    let protocol = sc.take_shared<ProtocolConfig>();
+    let mut tax_vault = sc.take_shared<TaxVault>();
+    let mut savings_vault = sc.take_shared<SavingsVault>();
+    let savings_cap = sc.take_from_sender<SavingsCap>();
+
+    sc.next_tx(PAYER);
+    let pay = mint(1_000_000, &mut sc);
+    let clk = clock::create_for_testing(sc.ctx()); // never incremented
+    router::execute_split_with_yield(
+        &config, &protocol, &mut mkt, &mut tax_vault, &mut savings_vault,
+        pay, 0, &clk, sc.ctx(),
+    );
+    // Same tx-time redeem: elapsed = 0 → 0 interest → out == deposited principal (40_000).
+    router::redeem_yield(&mut mkt, &mut savings_vault, &savings_cap, 40_000, &clk, sc.ctx());
+    sc.next_tx(CREATOR);
+    // ctx.sender() during redeem_yield was PAYER (the active tx sender).
+    assert_eq!(drain_address(&sc, PAYER), 40_000); // exactly principal, no interest
+
+    clk.destroy_for_testing();
+    cleanup_payouts(&sc);
+    sc.return_to_sender(savings_cap);
+    destroy(mcap);
+    ts::return_shared(config); ts::return_shared(protocol);
+    ts::return_shared(tax_vault); ts::return_shared(savings_vault);
+    ts::return_shared(mkt);
     sc.end();
 }
 
