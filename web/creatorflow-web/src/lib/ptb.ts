@@ -1,6 +1,6 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { bcs } from "@mysten/sui/bcs";
-import { CLOCK_ID, PACKAGE_ID, PROTOCOL_CONFIG_ID } from "./constants";
+import { CLOCK_ID, MOCK_MARKET_ID, PACKAGE_ID, PROTOCOL_CONFIG_ID } from "./constants";
 import type { RecipientInput } from "./bps";
 
 const R = `${PACKAGE_ID}::router`;
@@ -121,6 +121,37 @@ export function buildWithdraw(p: {
   return tx;
 }
 
+export function buildExecuteSplitWithYield(p: {
+  configId: string;
+  taxVaultId: string;
+  savingsVaultId: string;
+  amountIn: bigint;
+  expectedVersion: bigint;
+  usdcCoinIds: string[];
+}): Transaction {
+  const tx = new Transaction();
+  const [primary, ...rest] = p.usdcCoinIds;
+  const primaryCoin = tx.object(primary);
+  if (rest.length > 0) {
+    tx.mergeCoins(primaryCoin, rest.map((id) => tx.object(id)));
+  }
+  const [payment] = tx.splitCoins(primaryCoin, [tx.pure.u64(p.amountIn)]);
+  tx.moveCall({
+    target: `${R}::execute_split_with_yield`,
+    arguments: [
+      tx.object(p.configId),
+      tx.object(PROTOCOL_CONFIG_ID),
+      tx.object(MOCK_MARKET_ID),
+      tx.object(p.taxVaultId),
+      tx.object(p.savingsVaultId),
+      payment,
+      tx.pure.u64(p.expectedVersion),
+      tx.object(CLOCK_ID),
+    ],
+  });
+  return tx;
+}
+
 export function buildRedeemYield(p: {
   savingsVaultId: string;
   savingsCapId: string;
@@ -130,9 +161,11 @@ export function buildRedeemYield(p: {
   tx.moveCall({
     target: `${R}::redeem_yield`,
     arguments: [
+      tx.object(MOCK_MARKET_ID),
       tx.object(p.savingsVaultId),
       tx.object(p.savingsCapId),
       tx.pure.u64(p.amount),
+      tx.object(CLOCK_ID),
     ],
   });
   return tx;

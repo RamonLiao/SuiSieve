@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import { buildExecuteSplit, buildCreateConfig } from "./ptb";
-import { PACKAGE_ID } from "./constants";
+import { buildExecuteSplit, buildCreateConfig, buildExecuteSplitWithYield, buildRedeemYield } from "./ptb";
+import { PACKAGE_ID, MOCK_MARKET_ID } from "./constants";
 
 test("execute_split targets router::execute_split with the right package", () => {
   const tx = buildExecuteSplit({
@@ -36,4 +36,38 @@ test("create_config assembles a makeMoveVec of recipients", () => {
     (c) => c.$kind === "MoveCall" && c.MoveCall!.function === "new_recipient",
   );
   expect(hasNewRecipient).toBe(true);
+});
+
+test("buildExecuteSplitWithYield targets the _with_yield entry and includes market+clock", () => {
+  const tx = buildExecuteSplitWithYield({
+    configId: "0x1", taxVaultId: "0x2", savingsVaultId: "0x3",
+    amountIn: 1_000_000n, expectedVersion: 1n, usdcCoinIds: ["0xc1"],
+  });
+  const data = tx.getData();
+  const calls = data.commands.filter((c) => c.$kind === "MoveCall");
+  const targets = calls.map(
+    (c) => `${c.MoveCall!.package}::${c.MoveCall!.module}::${c.MoveCall!.function}`,
+  );
+  expect(targets).toContain(`${PACKAGE_ID}::router::execute_split_with_yield`);
+  // verify MOCK_MARKET_ID and CLOCK_ID appear as object inputs
+  const objectIds = data.inputs
+    .filter((i) => i.$kind === "UnresolvedObject")
+    .map((i) => i.UnresolvedObject!.objectId);
+  expect(objectIds).toContain(MOCK_MARKET_ID);
+  expect(objectIds).toContain("0x0000000000000000000000000000000000000000000000000000000000000006"); // clock (SDK normalizes 0x6)
+});
+
+test("buildRedeemYield includes the mock market and clock", () => {
+  const tx = buildRedeemYield({ savingsVaultId: "0x3", savingsCapId: "0x4", amount: 500n });
+  const data = tx.getData();
+  const calls = data.commands.filter((c) => c.$kind === "MoveCall");
+  const targets = calls.map(
+    (c) => `${c.MoveCall!.package}::${c.MoveCall!.module}::${c.MoveCall!.function}`,
+  );
+  expect(targets).toContain(`${PACKAGE_ID}::router::redeem_yield`);
+  const objectIds = data.inputs
+    .filter((i) => i.$kind === "UnresolvedObject")
+    .map((i) => i.UnresolvedObject!.objectId);
+  expect(objectIds).toContain(MOCK_MARKET_ID);
+  expect(objectIds).toContain("0x0000000000000000000000000000000000000000000000000000000000000006"); // clock (SDK normalizes 0x6)
 });

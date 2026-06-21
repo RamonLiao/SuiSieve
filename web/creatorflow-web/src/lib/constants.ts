@@ -6,6 +6,10 @@ export const PROTOCOL_CONFIG_ID =
 export const USDC_TYPE =
   "0xa1ec7fc00a6f40db9693ad1415d0c193ad3906494428cf252621037bd7117e29::usdc::USDC";
 export const CLOCK_ID = "0x6";
+// Created post-upgrade via router/mock_lending create_market one-shot (see plan Task 7).
+// Placeholder until deploy; replace with the real shared object id.
+export const MOCK_MARKET_ID =
+  "0x0000000000000000000000000000000000000000000000000000000000000000";
 export const MAX_RECIPIENTS = 16;
 export const BPS_TOTAL = 10_000;
 // On-chain protocol fee window. These mirror the deployed ProtocolConfig
