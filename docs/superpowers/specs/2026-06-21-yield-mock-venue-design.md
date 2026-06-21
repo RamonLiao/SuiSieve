@@ -32,10 +32,13 @@ This is explicitly a **demo venue**, not a production protocol — see §8.
 
 1. **We cannot mint Circle USDC.** Interest paid on redeem must come from a
    **pre-funded interest buffer** of real testnet USDC. The creator seeds the
-   `MockMarket` from their own wallet (e.g. 5–10 USDC). If the buffer can't cover
-   newly-realized interest, accrual **aborts (fail loud, `EBufferDry`)** at settle
-   time — see §3 segregation — rather than silently capping or stranding a later
-   principal-only redeemer.
+   `MockMarket` from their own wallet (e.g. 5–10 USDC). **Principal liveness is
+   absolute: a settle NEVER aborts on a dry buffer** (security-guard finding 5 — an
+   abort there would brick an innocent creator's *principal* redeem, the opposite of
+   the §3 segregation goal). Interest is therefore **best-effort**: settle realizes
+   `min(accrued, buffer_value)` and resets the clock; if the buffer is dry it realizes
+   0 and principal is still fully withdrawable. Buffer exhaustion is observable via the
+   `buffer_value` getter (dashboard headroom), not via an abort.
 2. **Demo must show yield live.** Sui testnet epochs are ~24h, so epoch-based
    accrual would read `elapsed = 0` during a demo. Interest is therefore
    **`Clock`-millisecond based**. Exact integer formula (pinned to avoid a 1000×/
@@ -84,13 +87,17 @@ public struct MockMarketCap has key, store { id: UID, market_id: ID }
 ### Functions
 
 ```move
-fun init(ctx)                                   // share MockMarket(rate=DEMO_RATE, both balances=0); transfer cap to publisher
-public fun seed(&mut MockMarket, &MockMarketCap, Coin<USDC>)   // cap-gated; interest_buffer.join(coin)
-public fun set_rate(&mut MockMarket, &MockMarketCap, u64)      // cap-gated
+// One-shot constructor. NOTE (security-guard finding 2): mock_lending is ADDED in a
+// package UPGRADE, and Move `fun init` runs ONLY at original publish — it does NOT
+// re-run on upgrade. So MockMarket cannot be created by a module initializer here; it
+// is created by a cap-gated one-shot using the EXISTING deployed protocol AdminCap.
+public fun create_market(&AdminCap, ctx): (already deployed AdminCap gates it; share MockMarket(rate=DEMO_RATE, balances=0), transfer fresh MockMarketCap to caller). Call once, record ids.
+public fun seed(&mut MockMarket, &MockMarketCap, Coin<USDC>)   // cap-gated; interest_buffer.join(coin). `public` is intentional — deployer seeds via off-chain PTB (security-guard finding 1, cleared).
+public fun set_rate(&mut MockMarket, &MockMarketCap, u64)      // cap-gated; assert rate <= MAX_RATE_BPS_PER_SEC (ERateTooHigh)
 // CPI seam entry points (called by yield_adapter only):
 public(package) fun supply(&mut MockMarket, Coin<USDC>): u64   // principal_pool.join(coin); total_supplied += v; returns v
-public(package) fun realize_interest(&mut MockMarket, amount: u64)   // move `amount` buffer→principal_pool; assert buffer covers it (EBufferDry)
-public(package) fun redeem(&mut MockMarket, amount: u64, &mut TxContext): Coin<USDC>  // take from principal_pool (always backed post-realize); EReserveDry guards invariant
+public(package) fun realize_interest(&mut MockMarket, want: u64): u64  // move min(want, buffer) buffer→principal_pool; returns realized amount (NEVER aborts — best-effort)
+public(package) fun redeem(&mut MockMarket, amount: u64, &mut TxContext): Coin<USDC>  // assert amount>0 (EZeroAmount); take from principal_pool (always backed post-settle); EReserveDry guards invariant
 public fun accrue(principal: u64, rate_bps_per_sec: u64, elapsed_ms: u64): u64        // pure interest calc, u128 internally + u64 range-check
 public fun rate(&MockMarket): u64
 public fun buffer_value(&MockMarket): u64                      // remaining interest headroom (dashboard)
@@ -99,24 +106,31 @@ public fun principal_pool_value(&MockMarket): u64
 
 - `DEMO_RATE` = **5 bps/sec** (~0.05% per second). Documented as *demo-unrealistic by
   design* — chosen so a few seconds of wait shows a visible delta. Adjustable via
-  `set_rate`. **Rate changes are NOT time-segmented**: because of settle-on-touch, a
-  `set_rate` retroactively reprices every position's *unsettled* interval at the new
-  rate. Acceptable for a demo; stated so it's not read as a bug.
-- `accrue` is pure (no object/clock) → unit-testable in isolation; uses u128 to avoid
-  `principal · rate · elapsed` overflow, range-checks the result back to u64 (fail
-  loud on overflow), returns u64 interest.
-- `supply` / `realize_interest` / `redeem` are `public(package)` — **only**
-  `yield_adapter` reaches them, and `yield_adapter::redeem` is itself `SavingsCap`-
-  gated, so there is no uncapped path to `coin::take` from the pool (asserted by test).
-- Invariant: after a settle, `principal_pool` holds exactly Σ settled principal, so
-  `redeem` from it is always solvent; `EReserveDry` guards that invariant (should be
-  unreachable in correct flows — a defensive assert, not the primary failure surface).
+  `set_rate`, **bounded** by `MAX_RATE_BPS_PER_SEC` (security-guard finding 7/8 — an
+  unbounded rate lets the u128 `principal·rate·elapsed` product overflow → every settle
+  aborts = full DoS; and drains the whole buffer in one settle). Pick `MAX_RATE` so the
+  product can't overflow u128 at `principal = u64::MAX` over a plausible elapsed window.
+  **Rate changes are NOT time-segmented**: settle-on-touch means `set_rate` retroactively
+  reprices every position's *unsettled* interval. Demo-acceptable; stated so it's not a bug.
+- `realize_interest` is **best-effort, never aborts** (finding 5): realizes `min(want,
+  buffer_value)`, returns the amount actually realized so the caller folds only that into
+  principal. Principal liveness never depends on buffer solvency.
+- `accrue` is pure (no object/clock) → unit-testable in isolation; uses u128, range-checks
+  back to u64 (fail loud on overflow), returns u64 interest.
+- `supply` / `realize_interest` / `redeem` are `public(package)` — **only** `yield_adapter`
+  reaches them, and `yield_adapter::redeem` is `SavingsCap`-gated, so there's no uncapped
+  path to `coin::take` (asserted by test).
+- **Flooring forfeit (finding 4, by design):** `accrue` floors each settle; high-frequency
+  self-touches forfeit sub-threshold interest. A third party CANNOT force a settle (all
+  paths are cap-/PTB-/owner-scoped), so this is not a griefing vector — only the owner can
+  churn their own position. Documented, not defended.
 
 ### Errors
 
 ```move
 #[error] const EWrongMarketCap: ... // cap.market_id != this market
-#[error] const EBufferDry: ...      // interest_buffer cannot cover newly-realized interest (under-seeded)
+#[error] const ERateTooHigh: ...    // set_rate above MAX_RATE_BPS_PER_SEC
+#[error] const EZeroAmount: ...      // redeem amount == 0 (T6 zero-coin/event-poison guard)
 #[error] const EReserveDry: ...     // defensive: principal_pool < redeem amount (invariant breach)
 #[error] const EClockRewind: ...    // now < deposited_at_ms (Clock invariant breach)
 ```
@@ -145,14 +159,16 @@ exactly backing Σ settled principal (architect §1):
 ```
 now      = clock.timestamp_ms()
 assert now >= deposited_at_ms                          // EClockRewind
-interest = mock_lending::accrue(principal, market.rate(), now - deposited_at_ms)
-mock_lending::realize_interest(market, interest)       // buffer→principal_pool, EBufferDry if under-seeded
-principal = principal + interest
+accrued  = mock_lending::accrue(principal, market.rate(), now - deposited_at_ms)
+realized = mock_lending::realize_interest(market, accrued)  // best-effort: min(accrued, buffer); NEVER aborts
+principal = principal + realized                       // fold ONLY what was actually realized
 deposited_at_ms = now
 ```
 
-A position with `principal = 0` (just created) or `elapsed = 0` realizes 0 interest —
-no buffer draw, no abort.
+A position with `principal = 0` (just created) or `elapsed = 0` accrues 0 — no buffer
+draw. A dry buffer realizes 0 — principal is untouched and stays fully withdrawable
+(finding 5). Folding `realized` (not `accrued`) keeps `principal_pool` exactly backing
+Σ settled principal.
 
 ### Functions (all gain `&mut MockMarket` + `&Clock`)
 
@@ -167,11 +183,13 @@ public fun has_position      (&SavingsVault): bool
 
 - `deposit`: settle (if position exists) → `principal += mock_lending::supply(market, coin)` →
   update timestamp. Creates position on first use.
-- `redeem`: cap-gated + cross-vault check (`EWrongCap` preserved) → settle (realizes
-  interest into principal, backed in principal_pool) → `assert amount <= principal`
-  (`EInsufficientYield`) → `principal -= amount` → `mock_lending::redeem(market, amount,
-  ctx)` draws from principal_pool (always solvent post-settle). Because interest was
-  already realized into the pool, the returned coin includes the creator's earned yield.
+- `redeem`: cap-gated + cross-vault check (`EWrongCap` preserved) → `assert amount > 0`
+  (`EZeroRedeem` — security-guard finding 3: a zero-amount redeem would mint a zero
+  `Coin<USDC>` + emit a junk `VaultWithdrawn`, the same T6 object-bloat/event-poison
+  vector `execute_split` guards) → settle (best-effort interest into principal) →
+  `assert amount <= principal` (`EInsufficientYield`) → `principal -= amount` →
+  `mock_lending::redeem(market, amount, ctx)` draws from principal_pool (always solvent
+  post-settle). The returned coin includes the creator's realized yield.
 - `position_value(vault, market, clock)` takes `&MockMarket` (immutable) — it does NOT
   mutate, so it parallelizes and avoids the §5 serialization bottleneck.
 - The cross-vault cap defense (T4 / `EWrongCap`), `ENoPosition`, and fail-loud
@@ -191,9 +209,25 @@ contention result. So we use **two entry points**:
   caller compatibility (documented: "no-venue path; use `execute_split_with_yield`").
   → **t10-load-test.mts, SplitForm PTB, cap-defense-demo are all untouched.**
 - **New `execute_split_with_yield(config, protocol, tax_vault, savings_vault,
-  market: &mut MockMarket, payment, expected_version, clock, ctx)`** — identical split
-  logic, but routes the yield sub-slice through `yield_adapter::deposit(market, …)`.
-  This is the only path that takes `MockMarket` as a shared input.
+  market: &mut MockMarket, payment, expected_version, clock, ctx)`** — routes the yield
+  sub-slice through `yield_adapter::deposit(market, …)`. The only path taking `MockMarket`.
+- **No duplicated split math (security-guard finding 6 — `DES-FN`/drift risk):** the
+  fee/tax/savings/recipient/dust-conservation body is extracted into one
+  `public(package) fun split_core(config, protocol, tax_vault, savings_vault, payment,
+  route_yield: bool, expected_version, clock, ctx): Option<Coin<USDC>>`. It does ALL of
+  fee→treasury, tax→vault, recipient payouts, dust absorption, savings deposit (minus the
+  yield slice), and emits `SplitExecuted` with `yield_included = route_yield` (matches the
+  existing "constructed into PTB" semantics of that flag). It **returns** the carved yield
+  `Coin<USDC>` as `some(coin)` when `route_yield` else `none` — references can't live in
+  `Option` in Move, so the market is NOT threaded into `split_core`; the thin wrapper
+  routes the returned coin. Both entries call it:
+  - `execute_split` → `split_core(route_yield=false)` → `none` → done. Public signature
+    unchanged (T10 preserved).
+  - `execute_split_with_yield` → `split_core(route_yield=true)` → `some(yield_coin)` →
+    `yield_adapter::deposit(market, savings_vault, yield_coin, strategy, clock)`.
+
+  ONE copy of the conserved-gross/dust logic. §7 integration test asserts gross
+  conservation holds **identically** on both paths.
 - **`redeem_yield`** wrapper gains `&mut MockMarket` + `&Clock`. Only the redeem-yield
   demo uses it (today it aborts `ENoPosition` anyway), so no other caller breaks.
 
@@ -219,9 +253,13 @@ plain `execute_split` path; **it does NOT extend to `execute_split_with_yield`**
   `position_principal(vault)` via `SuiGrpcClient` (live accrued vs settled principal;
   the delta is the visible "yield"). No new events — consistent with the existing
   "events deferred" decision; the indexer is not extended in this task.
-- Deployment artifacts: publishing the upgraded package creates the shared
-  `MockMarket` + transfers `MockMarketCap` to the deployer; record both ids in
-  `.env` / move-notes for the demo. Seed the buffer with ~5–10 testnet USDC.
+- Deployment artifacts: **`init` does NOT run on a package upgrade** (security-guard
+  finding 2 — Move module initializers fire only at original publish). Since `mock_lending`
+  is added via in-place upgrade, the shared `MockMarket` is created by a separate cap-gated
+  one-shot `create_market(&AdminCap)` PTB after the upgrade, using the already-deployed
+  protocol `AdminCap`. That call shares `MockMarket` + transfers `MockMarketCap` to the
+  deployer. Record both ids in `.env` / move-notes; then seed the buffer with ~5–10 testnet
+  USDC. (The earlier "publishing creates MockMarket" framing was wrong for in-place upgrade.)
 
 ### Upgrade / migration hazard (architect §3 — GATE before deploy)
 
@@ -249,41 +287,54 @@ warrants). This is a §10 DoD item, not optional.
   overflow input.
 - `supply` grows `principal_pool` + `total_supplied`; `redeem` shrinks `principal_pool`
   and returns exact coin.
-- `realize_interest` moves buffer→principal_pool; beyond buffer → `EBufferDry` (fail loud).
-- `seed`/`set_rate` reject foreign cap → `EWrongMarketCap`.
-- **no uncapped path to `coin::take`**: assert `supply`/`realize_interest`/`redeem` are
+- `realize_interest` best-effort: full buffer → realizes `accrued`; dry/partial buffer →
+  realizes `min(accrued, buffer)`, returns that, **never aborts** (finding 5).
+- `seed`/`set_rate` reject foreign cap → `EWrongMarketCap`; `set_rate` above
+  `MAX_RATE_BPS_PER_SEC` → `ERateTooHigh`; extreme rate (`u64::MAX`) rejected, not
+  overflow-aborting every settle (finding 7/8).
+- `create_market` reachable only with the protocol `AdminCap`; no other constructor
+  shares a `MockMarket` (finding 2 — assert single creation path).
+- **no uncapped path to `coin::take`**: `supply`/`realize_interest`/`redeem` are
   `public(package)` (compile-level) — only `yield_adapter` reaches them.
+- `redeem` with `amount = 0` → `EZeroAmount` (finding 3).
 
 **`yield_adapter` (updated):**
 - deposit creates position with timestamp; second deposit settles+compounds (interest
   realized buffer→pool, principal grows).
 - `position_value` accrues with clock advance; equals principal when `elapsed = 0`.
 - redeem cap-gated; cross-vault `SavingsCap` → `EWrongCap`; no position → `ENoPosition`.
-- redeem > settled principal → `EInsufficientYield`.
-- settle with under-seeded buffer → `EBufferDry` (principal-only redeemers never stranded:
-  a separate position's principal redeem still succeeds against `principal_pool`).
+- redeem > settled principal → `EInsufficientYield`; redeem `amount = 0` → `EZeroRedeem`.
+- **shared-fate liveness (finding 5, the key test):** creator A's large accrual drains the
+  buffer; then creator B — *with unsettled interest* — redeems → settle realizes 0 interest
+  (best-effort) but B's **principal redeem still succeeds**. (The bug this guards: an
+  abort-on-dry-buffer would brick B's principal.)
 
 **Monkey (Rule: break it):**
 - redeem the full value then redeem again (position drained → `EInsufficientYield`).
 - supply 0-value coin; clock never advances (interest 0, value == principal, no buffer draw).
-- compound: many small deposits over advancing clock; buffer exhausted mid-settle →
-  `EBufferDry`, no underflow; then a DIFFERENT creator redeems pure principal → succeeds
-  (proves segregation: A's principal can't be stranded by B's interest).
+- compound: many small deposits over advancing clock; buffer drains mid-run → later
+  accruals realize 0, no abort, no underflow; principal always withdrawable.
+- `set_rate(u64::MAX)` → `ERateTooHigh`; confirm no settle overflows u128 at max allowed rate.
 
-**Integration (router):** `execute_split_with_yield` routes the yield slice into the
-market; `position_value` after a clock bump exceeds the deposited slice; non-yield
-`execute_split` still parks the slice in savings (regression — t10 path intact).
+**Integration (router):**
+- `execute_split_with_yield` routes the yield slice into the market; `position_value` after
+  a clock bump exceeds the deposited slice.
+- non-yield `execute_split` still parks the slice in savings (regression — t10 path intact).
+- **gross conservation holds identically on BOTH entry points** (finding 6 — `split_core`
+  shared body; assert payout+tax+savings+fee == amount_in, zero dust, on each path).
+- **market-untouched regression (finding 7):** plain `execute_split` never mutates
+  `MockMarket` — only `execute_split_with_yield` takes it as input.
 
 ## 8. Red team (core money flow → `sui-red-team` required)
 
 Pre-listed attack vectors and defenses:
 
-1. **Cross-creator principal theft / stranding** — drain the pool so another creator's
-   principal can't be redeemed. Defense: segregated `principal_pool` (always = Σ settled
-   principal, never pays interest) vs `interest_buffer`; buffer exhaustion aborts at
-   `realize_interest` (`EBufferDry`) on the accruing party, never strands a principal-only
-   redeemer. `coin::take` never underflows a `Balance`; `EReserveDry` is a defensive
-   invariant guard.
+1. **Cross-creator principal theft / stranding / liveness DoS** — drain the buffer so
+   another creator can't redeem. Defense: segregated `principal_pool` (always = Σ settled
+   principal, never pays interest) vs `interest_buffer`; `realize_interest` is **best-effort
+   and never aborts** (realizes `min(accrued, buffer)`), so a dry buffer denies *future
+   yield* but never blocks a settle → principal is always withdrawable (security-guard
+   finding 5). `coin::take` never underflows; `EReserveDry` is a defensive invariant guard.
 2. **Rate manipulation** — attacker inflates `rate_bps_per_sec` to mint interest.
    Defense: `set_rate` is `MockMarketCap`-gated; cap bound to `market_id`
    (`EWrongMarketCap`). (Note: a legit cap-holder changing rate retroactively reprices
@@ -298,6 +349,16 @@ Pre-listed attack vectors and defenses:
 6. **Uncapped reserve drain** — call `mock_lending::redeem` directly to pull USDC without
    a `SavingsCap`. Defense: `supply`/`realize_interest`/`redeem` are `public(package)`;
    the only caller is `yield_adapter`, whose `redeem` is `SavingsCap`-gated.
+7. **Zero-amount redeem (T6 object-bloat/event-poison)** — redeem 0 to mint junk zero-coins
+   + junk `VaultWithdrawn` events at gas cost. Defense: `yield_adapter::redeem` asserts
+   `amount > 0` (`EZeroRedeem`); `mock_lending::redeem` re-asserts (`EZeroAmount`).
+8. **Rate-overflow DoS** — set `rate_bps_per_sec` so high that `principal·rate·elapsed`
+   overflows u128 → every settle aborts → all positions frozen. Defense: `set_rate` bounds
+   `rate <= MAX_RATE_BPS_PER_SEC` (`ERateTooHigh`), chosen so the product can't overflow
+   u128 at `principal = u64::MAX`.
+9. **Second-market creation** — call a constructor twice to spawn a rogue `MockMarket`.
+   Defense: only `create_market(&AdminCap)` constructs/shares one; gated by the protocol
+   `AdminCap`; no module-init path on upgrade (finding 2).
 
 ## 9. Explicitly out of scope (YAGNI)
 
@@ -313,10 +374,11 @@ Pre-listed attack vectors and defenses:
 
 - `mock_lending` + updated `yield_adapter` + `execute_split_with_yield` compile;
   `sui move test` green (existing 57+ suite plus new tests).
-- `move-code-quality` 0 critical; `sui-red-team` 6 vectors (§8) DEFENDED with tests.
+- `move-code-quality` 0 critical; `sui-red-team` 9 vectors (§8) DEFENDED with tests.
 - Frontend new PTB builders typecheck; existing builders/tests untouched.
 - **Migration gate (§3):** confirm zero live old-shape `YieldPosition`s on the deployed
   package before upgrade; if any exist, fresh-deploy vaults instead of in-place upgrade.
-- Testnet: deploy upgrade, seed `interest_buffer` (~5–10 USDC), run
-  `execute_split_with_yield`, wait a few seconds, `redeem_yield` returns principal +
-  visible interest; record tx digests + `MockMarket`/`MockMarketCap` ids in move-notes.
+- Testnet: in-place upgrade → `create_market(&AdminCap)` one-shot → seed `interest_buffer`
+  (~5–10 USDC) → run `execute_split_with_yield`, wait a few seconds → `redeem_yield`
+  returns principal + visible interest; record tx digests + `MockMarket`/`MockMarketCap`
+  ids in move-notes.
