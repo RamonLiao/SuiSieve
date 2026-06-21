@@ -346,3 +346,25 @@ caveat：latency = validator execution-ack（非 checkpoint finality）；split 
 - `classify` 補 `(?:not |un)available for consumption`（validators 兩種措辭）+ 新增 `ratelimited` 桶（429 是 infra 天花板，不可與合約 abort 混淆）。
 
 **產物**：`scripts/t10-lib.ts`（純函式 percentile/classify/conserves，5 vitest PASS）+ `scripts/t10-load-test.mts`（harness）。spec `docs/superpowers/specs/2026-06-21-t10-load-test-design.md`、plan `docs/superpowers/plans/2026-06-21-t10-load-test.md`。tiered run 實耗 ≈5.6 USDC + <2 SUI gas（×多次 debug run）。
+
+---
+
+## 2026-06-22 — Mock yield venue（`mock_lending`）取代 Scallop 直連
+
+**為什麼不接真 Scallop**：spike 確認 Scallop lending pool 綁 Wormhole wUSDC（`0x5d4b30…::coin::COIN`，`reserve::MarketCoin<T>`），與本專案硬綁的 Circle 原生 USDC（`usdc::usdc::USDC`）是**不同 coin type**。Move 型別系統要求 supply 的 `Balance<T>` 精確等於 reserve 的 `T` → **編譯就過不了**，非 runtime config 可繞。即使 mainnet 也需 Scallop 開 native-USDC reserve。→ 真接降 v2，改自鑄型別相容的 demo venue。
+
+**核心設計（三輪 SUI review fold 後）**：
+- **資金 segregation**：`MockMarket{ principal_pool, interest_buffer: Balance<USDC> }`。`principal_pool` 恆 = Σ 所有 position 的 settled principal（本金永遠 100% backed）；`interest_buffer` 是預注資的利息來源（無法 mint Circle USDC）。
+- **best-effort 利息（never abort）= 最關鍵正確性**：settle 時 `realize_interest` 只搬 `min(accrued, buffer)` buffer→principal_pool，**buffer 乾不 abort**。原本的 `EBufferDry` fail-loud 會讓「利息結算」連鎖 brick 別人的「本金 redeem」（redeem 必先 settle）—— 違背 segregation 目的。本金 liveness 絕對優先；利息是有限 demo 資源、capped 是正確語意。
+- **invariant 證明（final review）**：`principal_pool.value() == Σ position.principal` 跨 position 恆成立 → `amount ≤ position.principal ≤ principal_pool` → `EReserveDry` 不可達。
+- **Clock-ms 計利**：`interest = principal·rate_bps_per_sec·elapsed_ms/(10000·1000)`，u128 算 + u64 range-check（`EAccrualOverflow`）。`DEMO_RATE=5 bps/sec`（demo 有感）、`MAX_RATE=100_000`（u128 overflow guard）。epoch 計利不可行（testnet epoch≈24h，demo 現場 elapsed=0）。
+- **升級陷阱**：`mock_lending` 經 package upgrade 新增 → `fun init` **不會在 upgrade 重跑** → 用既有 protocol `AdminCap` gate 的一次性 `create_market(&AdminCap)` 建 shared MockMarket + 發 MockMarketCap。
+- **router 雙 entry**：`execute_split` 簽章**完全不變**（保 T10「無競爭」結論——加 MockMarket 進 plain path 會讓每筆 split 鎖全域市場物件）；新 opt-in `execute_split_with_yield(&mut MockMarket,…)`。共用 `split_core(): Option<Coin<USDC>>`（一份數學、避 drift）；Option 契約「`route_yield && yield_amt>0` 才 `some`」防零切片 junk position（紅隊 #5）。`yield_adapter` 接縫兌現：`YieldPosition{strategy,principal,deposited_at_ms}`（丟 Balance）、settle-on-touch、`EStrategyMismatch`/`EZeroRedeem`/`EClockRewind`。
+- **EClockRewind 測試**：Sui `clock::set_for_testing` 強制單調 → 無法經 Clock API 倒帶 → 加 `#[test_only] settle_at_for_testing` 直驅 settle（assert 在生產仍是防禦性 unreachable）。
+- **T10 carve-out**：T10「無競爭」結論**只涵蓋 plain `execute_split`**，不延伸到 yield 路徑（MockMarket 單一全域 lock，比 per-creator vault 更序列化，但 yield 是 cold-path、demo 可接受、不 shard）。
+
+**驗證**：Move 76/76 PASS、0 warning；前端 52 vitest、tsc clean。move-code-quality/security-guard/red-team 三輪 review 0 critical/0 important；12 紅隊向量全測。final whole-branch（opus）= Ready to merge YES。6 commits `e040c74..90f23bb`，merge `2d36c3e`。
+
+**已知限制 / 待辦**：①利息 first-touch-wins、非公平分配（whale 可搶光 buffer），demo 接受、pro-rata 是 v2；②`total_supplied` 是 lifetime 計數器非 live invariant；③**Task 7 testnet 部署待跑**（upgrade→create_market→seed→e2e→換前端 `MOCK_MARKET_ID` 從 `0x0`）；④dashboard yield-panel UI 接線（讀 `position_value` via gRPC）非本 plan scope。
+
+**spec/plan**：`docs/superpowers/specs/2026-06-21-yield-mock-venue-design.md`（v4）、`docs/superpowers/plans/2026-06-22-yield-mock-venue.md`。
