@@ -18,6 +18,7 @@ module creatorflow::router;
 
 use creatorflow::capabilities::{OwnerCap, TaxCap, SavingsCap};
 use creatorflow::events;
+use creatorflow::mock_lending::MockMarket;
 use creatorflow::protocol_config::{Self, ProtocolConfig};
 use creatorflow::split_config::{Self, SplitConfig, Recipient, StrategyRef};
 use creatorflow::vaults::{Self, TaxVault, SavingsVault};
@@ -93,93 +94,59 @@ public fun create_config_and_vaults(
     vaults::share_savings(savings_vault);
 }
 
-/// The payment hot path (spec §4.2). Splits `payment` by the config's bps into
-/// recipient payouts + tax + savings (with optional yield carve) + protocol fee,
-/// then emits one `SplitExecuted`. Permissionless by design (anyone can push a
-/// payment into a config), so its only trust anchors are the two asserts below.
-///
-/// Rounding: each slice is a floor of `amount_in * bps / 10000` computed on
-/// `u128` intermediates (no `u64` overflow); the last recipient absorbs the
-/// accumulated remainder so the gross is conserved exactly (no dust burned). A
-/// recipient-less config (legal: 100% to tax/savings/fee) banks the remainder to
-/// savings instead.
-public fun execute_split(
+/// The shared split body — fee/tax/savings/recipient/dust + SplitExecuted emit. Returns
+/// the carved yield coin as `some(coin)` ONLY when `route_yield && yield_amt > 0`, else
+/// `none`. References can't live in `Option`, so the market is routed by the caller.
+public(package) fun split_core(
     config: &SplitConfig,
     protocol: &ProtocolConfig,
     tax_vault: &mut TaxVault,
     savings_vault: &mut SavingsVault,
     mut payment: Coin<USDC>,
-    include_yield: bool,
+    route_yield: bool,
     expected_version: u64,
     clock: &Clock,
     ctx: &mut TxContext,
-) {
-    // T2: the payer is paying into the exact config revision they signed for.
+): Option<Coin<USDC>> {
     assert!(split_config::version(config) == expected_version, EConfigChanged);
-
-    // T9: the vaults actually belong to this config (reject fake-vault siphon).
-    // Bidirectional — vault back-points to config AND config back-points to
-    // vault — so neither a spoofed vault nor a spoofed config slips through.
     let config_id = object::id(config);
     assert!(vaults::tax_config_id(tax_vault) == config_id, EVaultMismatch);
     assert!(vaults::savings_config_id(savings_vault) == config_id, EVaultMismatch);
     assert!(split_config::tax_vault_id(config) == object::id(tax_vault), EVaultMismatch);
-    assert!(
-        split_config::savings_vault_id(config) == object::id(savings_vault),
-        EVaultMismatch,
-    );
+    assert!(split_config::savings_vault_id(config) == object::id(savings_vault), EVaultMismatch);
 
-    // T6 (spam): reject zero-value payments. A permissionless hot path with no
-    // floor lets an attacker push `Coin<USDC>` of value 0 to mint a zero-coin
-    // object at every recipient (object bloat) and emit a junk `SplitExecuted`
-    // (indexer poisoning) at only gas cost. Every legitimate split moves funds.
     let amount_in = payment.value();
     assert!(amount_in > 0, EZeroPayment);
     let denom = (protocol_config::bps_denominator() as u128);
 
-    // Protocol fee → treasury.
     let fee_amt = slice(amount_in, split_config::protocol_fee_bps(config), denom);
     if (fee_amt > 0) {
-        transfer::public_transfer(
-            payment.split(fee_amt, ctx),
-            protocol_config::treasury(protocol),
-        );
+        transfer::public_transfer(payment.split(fee_amt, ctx), protocol_config::treasury(protocol));
     };
 
-    // Tax slice → tax vault.
     let tax_amt = slice(amount_in, split_config::tax_bps(config), denom);
-    if (tax_amt > 0) {
-        vaults::deposit_tax(tax_vault, payment.split(tax_amt, ctx));
-    };
+    if (tax_amt > 0) { vaults::deposit_tax(tax_vault, payment.split(tax_amt, ctx)); };
 
-    // Savings slice, with the yield sub-slice carved out of it. `yield_bps <=
-    // savings_bps` (config invariant) ⇒ `yield_amt <= savings_total`, so the
-    // inner split never underflows.
     let savings_total = slice(amount_in, split_config::savings_bps(config), denom);
     let yield_amt = slice(amount_in, split_config::yield_bps(config), denom);
-    let route_yield = include_yield && split_config::yield_strategy(config).is_some();
+    // Option contract = "is there a NON-ZERO coin to route" (red-team #5).
+    let do_yield = route_yield && split_config::yield_strategy(config).is_some() && yield_amt > 0;
     let mut savings_coin = payment.split(savings_total, ctx);
 
     let savings_deposited;
     let yield_deposited;
-    if (route_yield) {
-        // Mode A (spec §7): in-PTB yield deposit. If the venue call aborts the
-        // WHOLE split reverts — the client retries with `include_yield = false`.
-        let yield_coin = savings_coin.split(yield_amt, ctx);
-        let strategy = *split_config::yield_strategy(config).borrow();
-        yield_adapter::deposit(savings_vault, yield_coin, strategy);
+    let yield_out;
+    if (do_yield) {
+        yield_out = option::some(savings_coin.split(yield_amt, ctx));
         savings_deposited = savings_total - yield_amt;
         yield_deposited = yield_amt;
     } else {
-        // Yield not wired in → the slice stays in savings (observable as
-        // `yield_included = false`).
+        yield_out = option::none();
         savings_deposited = savings_total;
         yield_deposited = 0;
     };
     vaults::deposit_savings(savings_vault, savings_coin);
 
-    // Recipients: first n-1 by floor, last absorbs the remaining balance (its
-    // own floor + all accumulated dust) so nothing is lost.
     let recipients = split_config::recipients(config);
     let n = recipients.length();
     let mut payouts = vector[];
@@ -188,36 +155,62 @@ public fun execute_split(
         let r = recipients.borrow(i);
         let addr = split_config::recipient_addr(r);
         let bps = split_config::recipient_bps(r);
-        let amt = if (i + 1 == n) {
-            payment.value() // last recipient: whatever is left, dust included
-        } else {
-            slice(amount_in, bps, denom)
-        };
+        let amt = if (i + 1 == n) { payment.value() } else { slice(amount_in, bps, denom) };
         transfer::public_transfer(payment.split(amt, ctx), addr);
         payouts.push_back(events::new_recipient_payout(addr, amt, bps));
         i = i + 1;
     };
-
-    // No recipients ⇒ no one absorbed the dust; bank it to savings. With ≥1
-    // recipient, the last split consumed everything, so `payment` is now zero.
-    if (n == 0) {
-        vaults::deposit_savings(savings_vault, payment);
-    } else {
-        payment.destroy_zero();
-    };
+    if (n == 0) { vaults::deposit_savings(savings_vault, payment); } else { payment.destroy_zero(); };
 
     events::emit_split_executed(
-        config_id,
-        split_config::version(config),
-        amount_in,
-        payouts,
-        tax_amt,
-        savings_deposited,
-        fee_amt,
-        yield_deposited,
-        route_yield,
-        clock.timestamp_ms(),
+        config_id, split_config::version(config), amount_in, payouts,
+        tax_amt, savings_deposited, fee_amt, yield_deposited, do_yield, clock.timestamp_ms(),
     );
+    yield_out
+}
+
+/// The payment hot path (spec §4.2). Plain path — NEVER routes yield to a venue
+/// (would force every split to lock MockMarket → kills T10). The yield slice, if
+/// any, stays in savings (`route_yield = false` ⇒ always `none`).
+///
+/// `_include_yield` is kept for PTB/ABI compatibility but is intentionally
+/// ignored; use `execute_split_with_yield` to route the yield sub-slice.
+public fun execute_split(
+    config: &SplitConfig,
+    protocol: &ProtocolConfig,
+    tax_vault: &mut TaxVault,
+    savings_vault: &mut SavingsVault,
+    payment: Coin<USDC>,
+    _include_yield: bool,
+    expected_version: u64,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let leftover = split_core(config, protocol, tax_vault, savings_vault, payment, false, expected_version, clock, ctx);
+    leftover.destroy_none();
+}
+
+/// Opt-in yield path: same split, but routes the yield sub-slice through `mock_lending`.
+/// The ONLY entry taking `&mut MockMarket` (so it does NOT serialize the plain hot path).
+public fun execute_split_with_yield(
+    config: &SplitConfig,
+    protocol: &ProtocolConfig,
+    market: &mut MockMarket,
+    tax_vault: &mut TaxVault,
+    savings_vault: &mut SavingsVault,
+    payment: Coin<USDC>,
+    expected_version: u64,
+    clock: &Clock,
+    ctx: &mut TxContext,
+) {
+    let yield_out = split_core(config, protocol, tax_vault, savings_vault, payment, true, expected_version, clock, ctx);
+    if (yield_out.is_some()) {
+        let yc = yield_out.destroy_some();
+        let strategy = *split_config::yield_strategy(config).borrow();
+        yield_adapter::deposit(market, savings_vault, yc, strategy, clock);
+    } else {
+        yield_out.destroy_none();
+    };
 }
 
 /// Mutate a config's recipients/allocation (spec §4.4), then emit
@@ -288,19 +281,16 @@ public fun withdraw_savings(
 /// (the funds leave the savings vault's yield position).
 #[allow(lint(self_transfer))]
 public fun redeem_yield(
+    market: &mut MockMarket,
     savings_vault: &mut SavingsVault,
     cap: &SavingsCap,
     amount: u64,
+    clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    let coin = yield_adapter::redeem(savings_vault, cap, amount, ctx);
+    let coin = yield_adapter::redeem(market, savings_vault, cap, amount, clock, ctx);
     let to = ctx.sender();
-    events::emit_vault_withdrawn(
-        object::id(savings_vault),
-        events::kind_savings(),
-        amount,
-        to,
-    );
+    events::emit_vault_withdrawn(object::id(savings_vault), events::kind_savings(), amount, to);
     transfer::public_transfer(coin, to);
 }
 

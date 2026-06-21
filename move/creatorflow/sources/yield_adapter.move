@@ -12,158 +12,160 @@
 ///
 /// Dependency position (module-dependency.mmd): `yield_adapter → vaults`,
 /// `yield_adapter → split_config` (for `StrategyRef` — a legal backward edge,
-/// module 6 reading a type from module 3), `→ capabilities` (cap-gated redeem).
+/// module 6 reading a type from module 3), `→ capabilities` (cap-gated redeem),
+/// `→ mock_lending` (venue CPI seam).
 ///
 /// **Position storage (Rule 7 / spec §3.3):** the position is a **dynamic
 /// field** on the `SavingsVault`, NOT a struct field. This keeps `vaults`
-/// Scallop-agnostic and dodges the non-compatible-upgrade cost of adding a
+/// venue-agnostic and dodges the non-compatible-upgrade cost of adding a
 /// stored field later.
 ///
-/// **Scallop CPI seam (MVP scope):** a position holds the principal as a
-/// `Balance<USDC>` parked in the dynamic field. The real Scallop supply/redeem
-/// CPI is isolated to `supply_into` / `redeem_from` below — swapping those two
-/// bodies for actual Scallop market-coin calls (and changing the position's
-/// held type from `Balance<USDC>` to the Scallop sCoin) is the only change
-/// needed to go live. Everything else — cap gating, accounting, events seam —
-/// is real. `StrategyRef.pool_id`/`kind` is recorded but not yet used to route
-/// funds; the real CPI will validate it against the supplied pool.
+/// **Venue CPI seam (MVP scope):** `principal` is the settled net USDC (interest
+/// folded in on each touch); the actual USDC lives in `MockMarket.principal_pool`.
+/// Swapping `mock_lending` calls for real Scallop market-coin calls is the only
+/// change needed to go live. Everything else — cap gating, accounting, settle
+/// logic — is real. `StrategyRef.pool_id`/`kind` is recorded but not yet used
+/// to route funds; the real CPI will validate it against the supplied pool.
 module creatorflow::yield_adapter;
 
 use creatorflow::capabilities::{Self, SavingsCap};
+use creatorflow::mock_lending::{Self, MockMarket};
 use creatorflow::split_config::StrategyRef;
 use creatorflow::vaults::{Self, SavingsVault};
-use sui::balance::{Self, Balance};
-use sui::coin::{Self, Coin};
+use sui::clock::Clock;
+use sui::coin::Coin;
 use sui::dynamic_field as df;
 use usdc::usdc::USDC;
 
 #[error]
 const EWrongCap: vector<u8> =
     b"SavingsCap does not govern this vault (cross-vault cap reuse rejected)";
-
 #[error]
-const ENoPosition: vector<u8> =
-    b"no yield position exists on this savings vault";
-
+const ENoPosition: vector<u8> = b"no yield position exists on this savings vault";
 #[error]
-const EInsufficientYield: vector<u8> =
-    b"redeem/sweep amount exceeds yield position balance";
+const EInsufficientYield: vector<u8> = b"redeem amount exceeds settled principal";
+#[error]
+const EZeroRedeem: vector<u8> = b"redeem amount must be > 0";
+#[error]
+const EStrategyMismatch: vector<u8> = b"deposit strategy differs from the position's pinned strategy";
+#[error]
+const EClockRewind: vector<u8> = b"clock timestamp is before the position's last settle";
 
 /// Positional dynamic-field key for the single yield position on a
 /// `SavingsVault`. One position per vault (MVP); a multi-venue creator is a v1
 /// concern that would key by `pool_id`.
 public struct YieldKey() has copy, drop, store;
 
-/// A creator's yield position, parked under the `YieldKey` dynamic field of
-/// their `SavingsVault`. `principal` is the lifetime-net USDC supplied (the
-/// accounting figure the dashboard shows); `balance` is the actual held funds
-/// — the **Scallop CPI seam** (real impl swaps this for the Scallop sCoin).
+/// `principal` is the settled net USDC (interest folded in on each touch); the actual
+/// USDC lives in `MockMarket.principal_pool`. `deposited_at_ms` is the accrual base.
 public struct YieldPosition has store {
     strategy: StrategyRef,
     principal: u64,
-    balance: Balance<USDC>,
+    deposited_at_ms: u64,
 }
 
-/// Mode A: deposit the already-carved yield `coin` into the vault's position,
-/// creating the position on first use. `public(package)` — only
-/// `router::execute_split` calls this, in-PTB. This is the call that "can
-/// abort" in the §7 sense: in the real Scallop wiring, `supply_into` may abort
-/// (pool paused, min-deposit, version drift), reverting the whole split PTB.
+/// Fold accrued interest (best-effort, capped at buffer) into principal and reset the
+/// clock. NEVER aborts on a dry buffer — principal liveness is absolute.
+fun settle(market: &mut MockMarket, position: &mut YieldPosition, now: u64) {
+    assert!(now >= position.deposited_at_ms, EClockRewind);
+    let rate = mock_lending::rate(market);
+    let accrued = mock_lending::accrue(position.principal, rate, now - position.deposited_at_ms);
+    let realized = mock_lending::realize_interest(market, accrued);
+    position.principal = position.principal + realized;
+    position.deposited_at_ms = now;
+}
+
+/// Mode A: deposit the carved yield `coin` into the vault's position via the market.
 public(package) fun deposit(
+    market: &mut MockMarket,
     vault: &mut SavingsVault,
     coin: Coin<USDC>,
     strategy: StrategyRef,
+    clock: &Clock,
 ) {
+    let now = clock.timestamp_ms();
     let uid = vaults::savings_uid_mut(vault);
     if (!df::exists<YieldKey>(uid, YieldKey())) {
-        df::add(uid, YieldKey(), YieldPosition {
-            strategy,
-            principal: 0,
-            balance: balance::zero(),
-        });
+        df::add(uid, YieldKey(), YieldPosition { strategy, principal: 0, deposited_at_ms: now });
     };
     let position = df::borrow_mut<YieldKey, YieldPosition>(uid, YieldKey());
-    supply_into(position, coin);
+    assert!(position.strategy == strategy, EStrategyMismatch);
+    settle(market, position, now);
+    let added = mock_lending::supply(market, coin);
+    position.principal = position.principal + added;
+    position.deposited_at_ms = now;
 }
 
-/// Mode B: move `amount` of *already-banked* savings into the yield position.
-/// `SavingsCap`-gated (this spends creator funds, so it needs the cold-wallet
-/// cap, unlike the Mode A `deposit` which is authorized by the payment PTB).
-/// Run by a scheduled off-chain job, decoupled from the payment path.
+/// Mode B: move `amount` of already-banked savings into the yield position. SavingsCap-
+/// gated (withdraw_savings asserts the cap binds this vault + covers `amount`).
 public(package) fun sweep(
+    market: &mut MockMarket,
     vault: &mut SavingsVault,
     cap: &SavingsCap,
     amount: u64,
     strategy: StrategyRef,
+    clock: &Clock,
     ctx: &mut TxContext,
 ) {
-    // `withdraw_savings` already asserts the cap binds to this vault (T4) and
-    // that the balance covers `amount`; no need to re-check here.
     let coin = vaults::withdraw_savings(vault, cap, amount, ctx);
-    deposit(vault, coin, strategy);
+    deposit(market, vault, coin, strategy, clock);
 }
 
-/// Redeem `amount` of USDC out of the yield position, returning a fresh coin to
-/// the caller (the creator's cold wallet, via the PTB — spec §5 "Drain yield
-/// only"). `SavingsCap`-gated and bound to THIS vault (T4). The real Scallop
-/// wiring redeems the sCoin back to USDC inside `redeem_from`.
+/// Redeem `amount` USDC out of the position back to the caller. SavingsCap-gated + bound
+/// to THIS vault (T4). Settles first (best-effort interest), then draws principal.
 public(package) fun redeem(
+    market: &mut MockMarket,
     vault: &mut SavingsVault,
     cap: &SavingsCap,
     amount: u64,
+    clock: &Clock,
     ctx: &mut TxContext,
 ): Coin<USDC> {
     assert!(capabilities::savings_cap_vault_id(cap) == object::id(vault), EWrongCap);
+    assert!(amount > 0, EZeroRedeem);
+    let now = clock.timestamp_ms();
     let uid = vaults::savings_uid_mut(vault);
     assert!(df::exists<YieldKey>(uid, YieldKey()), ENoPosition);
     let position = df::borrow_mut<YieldKey, YieldPosition>(uid, YieldKey());
-    redeem_from(position, amount, ctx)
+    settle(market, position, now);
+    assert!(amount <= position.principal, EInsufficientYield);
+    position.principal = position.principal - amount;
+    mock_lending::redeem(market, amount, ctx)
 }
 
-// --- Scallop CPI seam --------------------------------------------------------
-// Swapping ONLY these two bodies (and `YieldPosition.balance`'s type) for real
-// Scallop market-coin calls takes this live. Everything above is production.
+// --- test-only helpers -------------------------------------------------------
 
-/// Supply `coin` into the position. MVP: park it in the held balance and credit
-/// principal. Real impl: call Scallop `supply` → receive sCoin → store sCoin.
-fun supply_into(position: &mut YieldPosition, coin: Coin<USDC>) {
-    position.principal = position.principal + coin.value();
-    position.balance.join(coin.into_balance());
+/// Expose `settle` with an explicit `now_ms` so tests can drive `EClockRewind`
+/// without needing a backwards-moving Clock (Sui's clock enforces monotonicity,
+/// making it impossible to reach the guard through the normal Clock API).
+#[test_only]
+public fun settle_at_for_testing(
+    market: &mut MockMarket,
+    vault: &mut SavingsVault,
+    now_ms: u64,
+) {
+    let uid = vaults::savings_uid_mut(vault);
+    assert!(df::exists<YieldKey>(uid, YieldKey()), ENoPosition);
+    let position = df::borrow_mut<YieldKey, YieldPosition>(uid, YieldKey());
+    settle(market, position, now_ms);
 }
 
-/// Redeem `amount` USDC out of the position. MVP: take from the parked balance.
-/// Real impl: burn sCoin via Scallop `redeem` → receive USDC. Asserts the
-/// position can cover `amount` (fail loud, not silent-cap).
-fun redeem_from(
-    position: &mut YieldPosition,
-    amount: u64,
-    ctx: &mut TxContext,
-): Coin<USDC> {
-    assert!(amount <= position.balance.value(), EInsufficientYield);
-    // `principal` tracks net supplied; on redeem we draw it down by the
-    // withdrawn amount (yield earned over principal, once real, is the excess
-    // balance beyond `principal` and is redeemed last).
-    position.principal = if (amount >= position.principal) {
-        0
-    } else {
-        position.principal - amount
-    };
-    coin::take(&mut position.balance, amount, ctx)
-}
-
-// --- getters: dashboard yield panel, indexer ---------------------------------
+// --- getters -----------------------------------------------------------------
 
 /// Whether the savings vault has an open yield position.
 public fun has_position(vault: &SavingsVault): bool {
     df::exists<YieldKey>(vaults::savings_uid(vault), YieldKey())
 }
 
-/// Current redeemable USDC held in the position (0 if none). For real Scallop
-/// this is the sCoin's USDC-equivalent (principal + accrued yield).
-public fun position_value(vault: &SavingsVault): u64 {
+/// Live redeemable value: settled principal + interest accrued since last settle
+/// (display figure; uncapped by buffer — actual realize is best-effort on touch).
+public fun position_value(vault: &SavingsVault, market: &MockMarket, clock: &Clock): u64 {
     let uid = vaults::savings_uid(vault);
     if (!df::exists<YieldKey>(uid, YieldKey())) return 0;
-    df::borrow<YieldKey, YieldPosition>(uid, YieldKey()).balance.value()
+    let position = df::borrow<YieldKey, YieldPosition>(uid, YieldKey());
+    let now = clock.timestamp_ms();
+    let elapsed = if (now >= position.deposited_at_ms) now - position.deposited_at_ms else 0;
+    position.principal + mock_lending::accrue(position.principal, mock_lending::rate(market), elapsed)
 }
 
 /// Net principal supplied into the position (0 if none).
