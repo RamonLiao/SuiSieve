@@ -10,9 +10,9 @@ const validAddr = (index: number): string =>
 // Helper to create a minimal valid split with N recipients
 function validSplitDraft(n: number): SplitDraft {
   const savingsBps = 2500;
-  const feeBps = 500;
+  const feeBps = 30; // must lie in on-chain fee window [30,100]
   const yieldBps = 500;
-  const taxBps = 1500;
+  const taxBps = 1970;
   const recipientBpsTotal = 10000 - (savingsBps + feeBps + taxBps); // 5500
   const bpsPerRecipient = Math.floor(recipientBpsTotal / n);
   const remainder = recipientBpsTotal - bpsPerRecipient * n;
@@ -37,9 +37,9 @@ test("validateSplit: rejects sum < 10000", () => {
     recipients: [{ addr: validAddr(0), bps: 5000, label: "R0" }],
     taxBps: 2000,
     savingsBps: 2000,
-    feeBps: 500,
+    feeBps: 30, // valid fee so the sum check is what fires
     yieldBps: 500,
-    // Sum: 5000+2000+2000+500 = 9500 (missing 500)
+    // Sum: 5000+2000+2000+30 = 9030 (< 10000)
   };
   const result = validateSplit(draft);
   expect(result.ok).toBe(false);
@@ -51,9 +51,9 @@ test("validateSplit: rejects sum > 10000", () => {
     recipients: [{ addr: validAddr(0), bps: 5500, label: "R0" }],
     taxBps: 2500,
     savingsBps: 2000,
-    feeBps: 500,
+    feeBps: 30, // valid fee so the sum check is what fires
     yieldBps: 500,
-    // Sum: 5500+2500+2000+500 = 10500 (too much)
+    // Sum: 5500+2500+2000+30 = 10030 (> 10000)
   };
   const result = validateSplit(draft);
   expect(result.ok).toBe(false);

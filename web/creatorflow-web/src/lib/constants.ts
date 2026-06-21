@@ -8,5 +8,12 @@ export const USDC_TYPE =
 export const CLOCK_ID = "0x6";
 export const MAX_RECIPIENTS = 16;
 export const BPS_TOTAL = 10_000;
+// On-chain protocol fee window. These mirror the deployed ProtocolConfig
+// (min_fee_bps/max_fee_bps). They are admin-mutable on-chain within
+// [0, MAX_FEE_CEILING=1000], so the proper hardening is to read them from
+// ProtocolConfig at form load and pass them into validateSplit. Until then
+// these defaults match the deployed values and keep the client fail-loud.
+export const MIN_FEE_BPS = 30;
+export const MAX_FEE_BPS = 100;
 export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
