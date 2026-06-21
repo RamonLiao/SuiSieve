@@ -68,10 +68,24 @@ the script is re-runnable against any owner config.
      `tx.setSender(owner)`, `tx.setGasPayment([dedicated gas coin])`,
      `tx.setGasBudget(FIXED_BUDGET)` (skips gas estimation / dry-run so timing is
      not polluted and shared objects are not read pre-flight).
-   - Fire all N via `Promise.allSettled(signAndExecuteTransaction(...))`; record
-     `submit→resolve` ms per tx (`performance.now()`).
+   - **Pre-build to bytes in prep, not in the burst.** `signAndExecuteTransaction`
+     internally calls `transaction.build({client})`, which resolves every object
+     ref (owned coin versions/digests + shared-object initial versions) via RPC
+     reads. Doing that inside the timed burst measures the SDK's resolution reads,
+     not vault serialization. So call `await tx.build({ client })` for all N txs
+     during prep; in the burst only `signer.signTransaction(bytes)` +
+     `client.executeTransaction({ transaction: bytes, signatures })` are timed.
+   - Fire all N via `Promise.allSettled(...)`; record `submit→resolve` ms per tx
+     (`performance.now()`). `resolve` = execution-acknowledged by the validator
+     (gRPC execution path; Quorum Driver is disabled in Protocol 124), not
+     checkpoint finality — documented in the report.
    - **No auto-retry** — retrying masks the throughput ceiling. Classify each
-     result: success / retriable (object-locked / congestion) / terminal abort.
+     result into explicit buckets: `success` / `congestion`
+     (`ExecutionCancelledDueToSharedObjectCongestion` — Protocol 124 per-shared-
+     object congestion control deferring the tx; **this is the T10 ceiling
+     signal**) / `locked` (owned-object lock contention — should be ~0 given
+     dedicated coins; a non-zero count means the isolation leaked) / `terminal`
+     (Move abort, e.g. `EConfigChanged`).
 
 3. **Measure & report**
    - Compute wall-clock (first submit → last resolve), throughput, latency
@@ -97,6 +111,18 @@ the script is re-runnable against any owner config.
 | dry-run pollutes timing + extra shared-object reads | fixed `gasBudget`, gas estimation disabled |
 | insufficient coins / prep failure | prep awaits finality + balance pre-check, abort loud |
 | false positives from retry masking the ceiling | no retry; classify retriable vs terminal |
+
+## SDK / platform notes (verified against installed @mysten/sui 2.19.0, Protocol 124)
+
+- `SuiGrpcClient` (`@mysten/sui/grpc`) exposes `signAndExecuteTransaction`,
+  `executeTransaction`, `waitForTransaction`, `simulateTransaction`. JSON-RPC /
+  Quorum Driver is deprecated/disabled — the gRPC execution path is primary.
+- `signAndExecuteTransaction({ transaction, signer })` builds + signs + executes;
+  the harness splits this into pre-built bytes (prep) + `executeTransaction`
+  (burst) per the timing-isolation requirement above.
+- Reuses `buildExecuteSplit` from `src/lib/ptb.ts` (splits exactly `amountIn` off
+  the dedicated coin → compatible with one-coin-per-tx). Signer is an
+  `Ed25519Keypair` loaded from env (never hardcoded).
 
 ## Known caveat
 
