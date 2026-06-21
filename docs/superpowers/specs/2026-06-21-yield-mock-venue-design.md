@@ -68,9 +68,9 @@ principal + timestamp on the position is enough for a demo.
 ///     A redeem draws principal from here; it is ALWAYS fully backed, so a
 ///     principal withdrawal can never be stranded by another creator's interest.
 ///   - `interest_buffer` is the seeded USDC that pays yield. On settle, realized
-///     interest is MOVED buffer→principal_pool; if the buffer can't cover it the
-///     settle aborts `EBufferDry` — fail-loud at the moment of accrual, on the
-///     party accruing, not on a later innocent redeemer.
+///     interest is MOVED buffer→principal_pool, but only `min(accrued, buffer)` —
+///     best-effort, NEVER aborts on a dry buffer (finding 5). A dry buffer denies
+///     future yield; it never blocks a settle, so principal stays withdrawable.
 public struct MockMarket has key {
     id: UID,
     principal_pool: Balance<USDC>,
@@ -120,6 +120,12 @@ public fun principal_pool_value(&MockMarket): u64
 - `supply` / `realize_interest` / `redeem` are `public(package)` — **only** `yield_adapter`
   reaches them, and `yield_adapter::redeem` is `SavingsCap`-gated, so there's no uncapped
   path to `coin::take` (asserted by test).
+- **Interest is best-effort and NOT fairness-guaranteed (red-team #3, by design):** the
+  buffer is one shared pool served first-touch-wins (`realize_interest = min(accrued,
+  buffer)`). A whale who supplies large principal can, by settling first after a seed
+  top-up, realize the *entire* buffer into their own principal, leaving smaller creators
+  realizing 0 that round. Principal is always safe (segregated); only *yield distribution*
+  is ordering-dependent. Acceptable for a demo; pro-rata buffer split is a v2 concern.
 - **Flooring forfeit (finding 4, by design):** `accrue` floors each settle; high-frequency
   self-touches forfeit sub-threshold interest. A third party CANNOT force a settle (all
   paths are cap-/PTB-/owner-scoped), so this is not a griefing vector — only the owner can
@@ -182,7 +188,11 @@ public fun has_position      (&SavingsVault): bool
 ```
 
 - `deposit`: settle (if position exists) → `principal += mock_lending::supply(market, coin)` →
-  update timestamp. Creates position on first use.
+  update timestamp. Creates position on first use. On the existing-position branch,
+  `assert!(position.strategy == strategy, EStrategyMismatch)` (red-team #1) — the current stub
+  silently ignores the incoming strategy and honors the first-pinned one; inert for this
+  single-market demo but a position-poisoning vector once v2 routes by `pool_id`. Cheap
+  fail-loud now, future-proofs the seam.
 - `redeem`: cap-gated + cross-vault check (`EWrongCap` preserved) → `assert amount > 0`
   (`EZeroRedeem` — security-guard finding 3: a zero-amount redeem would mint a zero
   `Coin<USDC>` + emit a junk `VaultWithdrawn`, the same T6 object-bloat/event-poison
@@ -216,18 +226,28 @@ contention result. So we use **two entry points**:
   `public(package) fun split_core(config, protocol, tax_vault, savings_vault, payment,
   route_yield: bool, expected_version, clock, ctx): Option<Coin<USDC>>`. It does ALL of
   fee→treasury, tax→vault, recipient payouts, dust absorption, savings deposit (minus the
-  yield slice), and emits `SplitExecuted` with `yield_included = route_yield` (matches the
-  existing "constructed into PTB" semantics of that flag). It **returns** the carved yield
-  `Coin<USDC>` as `some(coin)` when `route_yield` else `none` — references can't live in
-  `Option` in Move, so the market is NOT threaded into `split_core`; the thin wrapper
-  routes the returned coin. Both entries call it:
+  routed yield slice). It **returns** the carved yield `Coin<USDC>` — references can't live
+  in `Option` in Move, so the market is NOT threaded into `split_core`; the wrapper routes it.
+
+  **Option contract = "is there a non-zero coin to route" (red-team #5 — real bug guard):**
+  `split_core` returns `some(coin)` **only when `route_yield && yield_amt > 0`**, else `none`
+  (the yield slice, if any, stays in savings). Closes two foot-guns: (a) `_with_yield` called
+  but `yield_strategy.is_none()` → `route_yield=false` → `none`; the wrapper's `none` arm
+  `destroy_none`s cleanly (must NOT `extract`/`destroy_some`). (b) `yield_bps=0` with
+  `yield_strategy=some` (allowed by `yield_bps<=savings_bps`) → `yield_amt=0` → `none`, so
+  **no zero-value `Coin<USDC>` is routed and no zero-principal junk position is created** (the
+  gross-level T6 guard does not cover this sub-slice). `SplitExecuted.yield_included` is the
+  **effective** route (`some` ⇒ true), so a zero-slice split truthfully reports `false`.
+  Both entries call it:
   - `execute_split` → `split_core(route_yield=false)` → `none` → done. Public signature
     unchanged (T10 preserved).
   - `execute_split_with_yield` → `split_core(route_yield=true)` → `some(yield_coin)` →
-    `yield_adapter::deposit(market, savings_vault, yield_coin, strategy, clock)`.
+    `yield_adapter::deposit(market, savings_vault, yield_coin, strategy, clock)`; on `none`
+    nothing to route.
 
-  ONE copy of the conserved-gross/dust logic. §7 integration test asserts gross
-  conservation holds **identically** on both paths.
+  ONE copy of the conserved-gross/dust logic. §7 integration test asserts the **5-term** sum
+  (`payout + tax + savings_deposited + fee + yield_deposited == amount_in`) on the yield path
+  equals the **4-term** sum on the plain path equals `amount_in`, zero dust (red-team #6).
 - **`redeem_yield`** wrapper gains `&mut MockMarket` + `&Clock`. Only the redeem-yield
   demo uses it (today it aborts `ENoPosition` anyway), so no other caller breaks.
 
@@ -324,6 +344,14 @@ warrants). This is a §10 DoD item, not optional.
   shared body; assert payout+tax+savings+fee == amount_in, zero dust, on each path).
 - **market-untouched regression (finding 7):** plain `execute_split` never mutates
   `MockMarket` — only `execute_split_with_yield` takes it as input.
+- **zero-slice no-position (red-team #5):** `yield_bps=0, yield_strategy=some,
+  include_yield=true` via `execute_split_with_yield` → `split_core` returns `none`, **no
+  position created, no zero-coin minted**, gross conserved, `yield_included=false`.
+- **`_with_yield` on a no-strategy config:** `yield_strategy=none` → `none` arm
+  `destroy_none`s cleanly, no abort, slice stays in savings.
+- **intra-PTB deposit+redeem → 0 interest (red-team #4):** `execute_split_with_yield` then
+  `redeem_yield` in the SAME PTB → both read the same `0x6` Clock snapshot → `elapsed=0` →
+  zero interest extractable (encodes *why* the Clock-snapshot defense holds, Rule 9).
 
 ## 8. Red team (core money flow → `sui-red-team` required)
 
@@ -359,6 +387,15 @@ Pre-listed attack vectors and defenses:
 9. **Second-market creation** — call a constructor twice to spawn a rogue `MockMarket`.
    Defense: only `create_market(&AdminCap)` constructs/shares one; gated by the protocol
    `AdminCap`; no module-init path on upgrade (finding 2).
+10. **Zero-slice junk position** (red-team #5) — `yield_bps=0, strategy=some` routes a
+    zero coin → zero-principal position / zero-coin object. Defense: `split_core` returns
+    `none` unless `route_yield && yield_amt > 0`; wrapper never deposits a zero coin.
+11. **Stale StrategyRef poisoning** (red-team #1) — later deposit under a different
+    config strategy silently honored against the first-pinned one. Defense: existing-
+    position branch asserts `position.strategy == strategy` (`EStrategyMismatch`).
+12. **Intra-PTB deposit→redeem interest extraction** (red-team #4) — atomic
+    deposit+redeem to skim interest in one tx. Defense: single `0x6` Clock snapshot per
+    tx ⇒ `elapsed=0` ⇒ 0 interest; structurally unexploitable, asserted by test.
 
 ## 9. Explicitly out of scope (YAGNI)
 
@@ -374,7 +411,7 @@ Pre-listed attack vectors and defenses:
 
 - `mock_lending` + updated `yield_adapter` + `execute_split_with_yield` compile;
   `sui move test` green (existing 57+ suite plus new tests).
-- `move-code-quality` 0 critical; `sui-red-team` 9 vectors (§8) DEFENDED with tests.
+- `move-code-quality` 0 critical; `sui-red-team` 12 vectors (§8) DEFENDED with tests.
 - Frontend new PTB builders typecheck; existing builders/tests untouched.
 - **Migration gate (§3):** confirm zero live old-shape `YieldPosition`s on the deployed
   package before upgrade; if any exist, fresh-deploy vaults instead of in-place upgrade.
