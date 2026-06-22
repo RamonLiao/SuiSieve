@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SuiSieve — Pitch Deck</title>
+<style>
+  :root{
+    --bg:#070b16; --ink:#eaf0ff; --muted:#8da3c8; --line:#1b2740;
+    --sui:#4da2ff; --aqua:#5cf2d6; --gold:#ffc857; --rose:#ff6b8b;
+    --card:#0e1626;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--ink); overflow:hidden;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  /* ambient glow */
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:
+      radial-gradient(60vw 60vw at 78% -10%, rgba(77,162,255,.16), transparent 60%),
+      radial-gradient(50vw 50vw at 12% 110%, rgba(92,242,214,.12), transparent 60%);}
+
+  .deck{position:relative;height:100vh;width:100vw;display:flex;
+    overflow-x:auto;overflow-y:hidden;scroll-snap-type:x mandatory;scroll-behavior:smooth;
+    z-index:1;}
+  .deck::-webkit-scrollbar{display:none}
+  .slide{min-width:100vw;height:100vh;scroll-snap-align:center;
+    display:flex;flex-direction:column;justify-content:center;
+    padding:clamp(40px,7vw,120px);gap:22px;position:relative;}
+
+  .kicker{font-size:13px;letter-spacing:.32em;text-transform:uppercase;color:var(--sui);font-weight:700}
+  h1{font-size:clamp(40px,8vw,104px);line-height:.98;letter-spacing:-.03em;font-weight:800}
+  h2{font-size:clamp(30px,4.6vw,58px);line-height:1.04;letter-spacing:-.02em;font-weight:800}
+  .lead{font-size:clamp(17px,2vw,24px);color:var(--muted);max-width:60ch;line-height:1.5}
+  .big{font-size:clamp(20px,2.3vw,30px);line-height:1.45;max-width:30ch}
+  .grad{background:linear-gradient(100deg,var(--sui),var(--aqua));-webkit-background-clip:text;background-clip:text;color:transparent}
+  strong{color:var(--ink)}
+  em{font-style:normal;color:var(--aqua)}
+
+  .pageno{position:fixed;top:28px;right:34px;font-size:13px;color:var(--muted);
+    font-variant-numeric:tabular-nums;z-index:5;letter-spacing:.1em}
+  .brand{position:fixed;top:26px;left:34px;font-weight:800;letter-spacing:-.01em;font-size:15px;z-index:5}
+  .brand b{color:var(--sui)}
+
+  /* nav */
+  .nav{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:16px;z-index:6}
+  .arrow{width:44px;height:44px;border-radius:50%;border:1px solid var(--line);
+    background:rgba(14,22,38,.7);backdrop-filter:blur(8px);color:var(--ink);
+    font-size:18px;cursor:pointer;display:flex;align-items:center;justify-content:center;
+    transition:.18s;}
+  .arrow:hover{border-color:var(--sui);color:var(--sui);transform:scale(1.08)}
+  .dots{display:flex;gap:9px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--line);cursor:pointer;transition:.2s}
+  .dot.on{background:var(--sui);transform:scale(1.35)}
+
+  /* cards / grids */
+  .grid{display:grid;gap:16px;margin-top:6px}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px 22px}
+  .card h3{font-size:19px;margin-bottom:8px;letter-spacing:-.01em}
+  .card p{color:var(--muted);font-size:15px;line-height:1.5}
+  .tag{display:inline-block;font-size:12px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--sui);font-weight:700;margin-bottom:10px}
+
+  .flow{display:flex;align-items:center;flex-wrap:wrap;gap:10px;margin-top:10px;font-size:15px}
+  .pill{background:var(--card);border:1px solid var(--line);border-radius:999px;padding:10px 16px;white-space:nowrap}
+  .pill b{color:var(--aqua)}
+  .ar{color:var(--muted)}
+
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .code{background:#05080f;border:1px solid var(--line);border-radius:14px;
+    padding:20px 22px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:15px;line-height:1.7;color:#cfe0ff;max-width:760px}
+  .ok{color:var(--aqua)} .bad{color:var(--rose)} .cm{color:var(--muted)} .kw{color:var(--gold)}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:18px;margin-top:10px}
+  .stat .n{font-size:clamp(30px,4vw,52px);font-weight:800;letter-spacing:-.02em;
+    background:linear-gradient(100deg,var(--sui),var(--aqua));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .stat .l{color:var(--muted);font-size:14px;margin-top:4px}
+
+  .steps{display:flex;flex-direction:column;gap:14px;margin-top:6px}
+  .step{display:flex;gap:16px;align-items:flex-start}
+  .num{flex:0 0 34px;height:34px;border-radius:10px;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--sui)}
+  .step div p{color:var(--muted);font-size:15px;line-height:1.45}
+  .step div b{font-size:17px}
+
+  .footnote{position:fixed;bottom:28px;right:34px;font-size:12px;color:var(--muted);z-index:5}
+
+  @media (max-width:760px){
+    .g3,.g2,.stats{grid-template-columns:1fr 1fr}
+    .stats{grid-template-columns:1fr 1fr}
+  }
+</style>
+</head>
+<body>
+<div class="brand"><b>◆</b> SuiSieve</div>
+<div class="pageno"><span id="cur">1</span> / <span id="tot">10</span></div>
+
+<div class="deck" id="deck">
+
+  <!-- 1 — TITLE -->
+  <section class="slide">
+    <div class="kicker">Sui Overflow · DeFi &amp; Payments</div>
+    <h1>Define the rule once.<br><span class="grad">Every payment splits itself.</span></h1>
+    <p class="lead">SuiSieve is programmable revenue splitting for creators — atomic, capability-secured, and earning yield. Live on Sui testnet with real Circle USDC.</p>
+    <div class="footnote">← → or swipe to navigate</div>
+  </section>
+
+  <!-- 2 — PROBLEM -->
+  <section class="slide">
+    <div class="kicker">The problem</div>
+    <h2>Splitting revenue is a monthly<br>chore of spreadsheets and trust.</h2>
+    <p class="lead">A payment lands. Now someone manually pays the editor, the co-writer, sets aside tax, moves a little into savings. It is error-prone, it relies on trust — and the savings that do get set aside just sit there earning <strong>nothing</strong>.</p>
+  </section>
+
+  <!-- 3 — SOLUTION -->
+  <section class="slide">
+    <div class="kicker">The solution</div>
+    <h2>One on-chain rule. <span class="grad">One transaction.</span></h2>
+    <p class="lead">A creator defines a <em>split config</em> once. After that, any incoming USDC payment is split <strong>atomically</strong> — conserved to zero dust.</p>
+    <div class="grid g3">
+      <div class="card"><span class="tag">Pay</span><h3>Recipients</h3><p>Up to 16 collaborators, paid by basis points in a single transaction.</p></div>
+      <div class="card"><span class="tag">Set aside</span><h3>Tax &amp; Savings</h3><p>Dedicated capability-guarded vaults — set-aside happens automatically.</p></div>
+      <div class="card"><span class="tag">Grow</span><h3>Yield</h3><p>Savings earn interest on-chain and are redeemable on demand.</p></div>
+    </div>
+  </section>
+
+  <!-- 4 — WHY SUI -->
+  <section class="slide">
+    <div class="kicker">Why Sui</div>
+    <h2>Access control at the <span class="grad">type level</span>.</h2>
+    <p class="lead">Each vault is guarded by its own capability object. Compromise of one never cascades — and reusing the wrong capability is rejected <strong>before execution</strong>, by Sui's type system.</p>
+    <div class="code">
+<span class="cm">// a creator's TaxCap aimed at a *different* config's vault</span><br>
+<span class="kw">vaults::withdraw_tax</span>(taxCap_A, taxVault_<b>B</b>, …)<br>
+&nbsp;&nbsp;<span class="bad">🛑 abort EWrongCap</span>  <span class="cm">cap.vault_id != vault.id</span><br><br>
+<span class="kw">vaults::withdraw_tax</span>(taxCap_A, taxVault_<b>A</b>, …)<br>
+&nbsp;&nbsp;<span class="ok">✓ ok</span>  <span class="cm">un-forgeable, per-object blast radius</span>
+    </div>
+  </section>
+
+  <!-- 5 — ARCHITECTURE -->
+  <section class="slide">
+    <div class="kicker">It's a full stack — not a slideware contract</div>
+    <h2>On-chain truth, streamed to a live dashboard.</h2>
+    <div class="flow">
+      <span class="pill"><b>Move</b> contracts</span><span class="ar">→</span>
+      <span class="pill">Rust <b>indexer</b></span><span class="ar">→</span>
+      <span class="pill">Postgres</span><span class="ar">→</span>
+      <span class="pill">Hono <b>REST</b></span><span class="ar">→</span>
+      <span class="pill">Next.js + <b>dApp Kit</b></span>
+    </div>
+    <p class="lead" style="margin-top:18px">7 Move modules · <span class="mono">sui-indexer-alt-framework</span> exactly-once ingest · keyset-paginated read API · wallet dashboard. Every figure on screen is read back through our own indexer — not the explorer.</p>
+  </section>
+
+  <!-- 6 — DEMO 1 -->
+  <section class="slide">
+    <div class="kicker">Live demo · 1 of 3</div>
+    <h2>⭐ Atomic split — <span class="grad">zero dust</span>.</h2>
+    <div class="steps">
+      <div class="step"><div class="num">1</div><div><b>Pay 1 USDC into the config.</b><p>One signature, one transaction.</p></div></div>
+      <div class="step"><div class="num">2</div><div><b>Floor each share in u128; last recipient absorbs the dust.</b><p>Gross is conserved exactly — no leftover, no leak.</p></div></div>
+      <div class="step"><div class="num">3</div><div><b>Vault balances tick up live</b><p>as the indexer ingests the event.</p></div></div>
+    </div>
+    <div class="code" style="margin-top:6px">
+payout <span class="ok">897000</span> + tax <span class="ok">50000</span> + savings <span class="ok">50000</span> + fee <span class="ok">3000</span> = <b>1,000,000</b>  <span class="cm">// 0 dust</span>
+    </div>
+  </section>
+
+  <!-- 7 — DEMO 2 -->
+  <section class="slide">
+    <div class="kicker">Live demo · 2 of 3</div>
+    <h2>⭐ Capability defence — <span class="grad">the Sui moment</span>.</h2>
+    <p class="lead">A read-only simulation: no gas, no signing. Take this creator's <span class="mono">TaxCap</span> and try to drain a <strong>different</strong> config's vault.</p>
+    <div class="grid g2">
+      <div class="card" style="border-color:rgba(255,107,139,.4)"><span class="tag" style="color:var(--rose)">Cross-config attack</span><h3 class="mono">cap_A → vault_B</h3><p><span class="bad mono">🛑 EWrongCap — rejected</span></p></div>
+      <div class="card" style="border-color:rgba(92,242,214,.4)"><span class="tag" style="color:var(--aqua)">Legitimate</span><h3 class="mono">cap_A → vault_A</h3><p><span class="ok mono">✓ accepted</span></p></div>
+    </div>
+    <p class="lead" style="margin-top:8px">Access control an account-based chain can't express this cleanly.</p>
+  </section>
+
+  <!-- 8 — DEMO 3 -->
+  <section class="slide">
+    <div class="kicker">Live demo · 3 of 3</div>
+    <h2>Savings don't sit idle — <span class="grad">they earn</span>.</h2>
+    <div class="steps">
+      <div class="step"><div class="num">→</div><div><b>Deposit 8.9 USDC</b><p>into an on-chain lending venue, accruing interest by the clock.</p></div></div>
+      <div class="step"><div class="num">←</div><div><b>Redeem 8.95 USDC</b><p>interest paid on-chain, verified on testnet.</p></div></div>
+    </div>
+    <p class="lead" style="margin-top:8px"><strong>Principal liveness is absolute.</strong> Interest is best-effort — your principal redemption can never be bricked by an empty interest buffer.</p>
+  </section>
+
+  <!-- 9 — PROOF -->
+  <section class="slide">
+    <div class="kicker">Built, tested, deployed</div>
+    <h2>The proof.</h2>
+    <div class="stats">
+      <div class="stat"><div class="n">76/76</div><div class="l">Move tests, 0 warnings</div></div>
+      <div class="stat"><div class="n">0 / 0</div><div class="l">congestion / lock leakage @ 350-fan</div></div>
+      <div class="stat"><div class="n">≤16</div><div class="l">recipients · gas-grief guarded</div></div>
+      <div class="stat"><div class="n">Live</div><div class="l">testnet · real Circle USDC</div></div>
+    </div>
+    <p class="lead" style="margin-top:18px">Load-tested 10 → 350 concurrent splits on shared vaults: no Protocol-124 congestion, no isolation leakage. The plateau was RPC throttling — not the contract.</p>
+  </section>
+
+  <!-- 10 — VISION -->
+  <section class="slide">
+    <div class="kicker">Future vision</div>
+    <h2>Trust-minimised revenue infrastructure<br>for the <span class="grad">creator economy</span>.</h2>
+    <div class="grid g3">
+      <div class="card"><span class="tag">Yield</span><h3>Real partners</h3><p>Plug into native protocols like Scallop the moment a Circle-USDC reserve is live — market rates, no changes.</p></div>
+      <div class="card"><span class="tag">Onboarding</span><h3>zkLogin + gasless</h3><p>Sign in with Google, never see a seed phrase or a gas prompt. Both paths already in the architecture.</p></div>
+      <div class="card"><span class="tag">Payments</span><h3>Pay-links &amp; Stripe-on-Sui</h3><p>A fan or platform pays a URL — the split just happens. Multi-sig custody before mainnet.</p></div>
+    </div>
+    <p class="big" style="margin-top:24px"><span class="grad">SuiSieve</span> — define the rule once, and let every payment split itself.</p>
+  </section>
+
+</div>
+
+<div class="nav">
+  <button class="arrow" id="prev" aria-label="Previous">‹</button>
+  <div class="dots" id="dots"></div>
+  <button class="arrow" id="next" aria-label="Next">›</button>
+</div>
+
+<script>
+  const deck = document.getElementById('deck');
+  const slides = [...deck.children];
+  const dotsWrap = document.getElementById('dots');
+  const curEl = document.getElementById('cur');
+  document.getElementById('tot').textContent = slides.length;
+  let i = 0;
+
+  slides.forEach((_, n) => {
+    const d = document.createElement('div');
+    d.className = 'dot' + (n===0?' on':'');
+    d.onclick = () => go(n);
+    dotsWrap.appendChild(d);
+  });
+  const dots = [...dotsWrap.children];
+
+  function go(n){
+    i = Math.max(0, Math.min(slides.length-1, n));
+    deck.scrollTo({left: i*window.innerWidth, behavior:'smooth'});
+    sync();
+  }
+  function sync(){
+    dots.forEach((d,n)=>d.classList.toggle('on', n===i));
+    curEl.textContent = i+1;
+  }
+  document.getElementById('next').onclick = () => go(i+1);
+  document.getElementById('prev').onclick = () => go(i-1);
+
+  // keyboard
+  addEventListener('keydown', e => {
+    if(e.key==='ArrowRight'||e.key==='PageDown'||e.key===' ') {e.preventDefault();go(i+1);}
+    if(e.key==='ArrowLeft'||e.key==='PageUp') {e.preventDefault();go(i-1);}
+    if(e.key==='Home') go(0);
+    if(e.key==='End') go(slides.length-1);
+  });
+  // keep index synced when scrolling/swiping
+  let t;
+  deck.addEventListener('scroll', () => {
+    clearTimeout(t);
+    t = setTimeout(()=>{ i = Math.round(deck.scrollLeft/window.innerWidth); sync(); }, 80);
+  });
+  addEventListener('resize', () => deck.scrollTo({left:i*window.innerWidth}));
+</script>
+</body>
+</html>

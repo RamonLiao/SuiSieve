@@ -2,7 +2,7 @@ const RULES: Array<[RegExp, string]> = [
   [/EConfigChanged/, "Config changed since you loaded it — refresh and retry."],
   [/EVaultMismatch/, "Vault/config mismatch — wrong vault for this config."],
   [/EZeroPayment/, "Amount must be greater than 0."],
-  [/EWrongCap|ETreasury|cap/i, "You are not authorized (missing capability)."],
+  [/EWrongCap|ETreasury|cap/i, "You are not authorised (missing capability)."],
 ];
 
 export function mapAbort(rawError: string | null | undefined): string {
